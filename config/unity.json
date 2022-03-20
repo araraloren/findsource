@@ -1,0 +1,11 @@
+{
+    "opts": [
+        {
+            "opt": "-unity=a",
+            "help": "Extension category for unity",
+            "value": [
+                "meta"
+            ]
+        }
+    ]
+}

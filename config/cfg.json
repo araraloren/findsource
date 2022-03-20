@@ -1,0 +1,18 @@
+{
+    "opts": [
+        {
+            "opt": "-cfg=a",
+            "help": "Extension category for configuration",
+            "value": [
+                "cfg",
+                "ini",
+                "xml",
+                "json",
+                "conf",
+                "toml",
+                "yaml",
+                "config"
+            ]
+        }
+    ]
+}

@@ -1,0 +1,26 @@
+{
+    "opts": [
+        {
+            "opt": "-cpp=a",
+            "help": "Extension category for c source file",
+            "value": [
+                "C",
+                "cc",
+                "cpp",
+                "cxx",
+                "c++"
+            ]
+        },
+        {
+            "opt": "-h=a",
+            "help": "Extension category for header file",
+            "value": [
+                "h",
+                "hh",
+                "hxx",
+                "h++",
+                "hpp"
+            ]
+        }
+    ]
+}

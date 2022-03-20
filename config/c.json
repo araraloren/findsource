@@ -1,0 +1,18 @@
+{
+    "opts": [
+        {
+            "opt": "-c=a",
+            "help": "Extension category for c source file",
+            "value": [
+                "c"
+            ]
+        },
+        {
+            "opt": "-h=a",
+            "help": "Extension category for header file",
+            "value": [
+                "h"
+            ]
+        }
+    ]
+}

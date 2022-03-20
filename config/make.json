@@ -1,0 +1,20 @@
+{
+    "opts": [
+        {
+            "opt": "-w=a",
+            "help": "Whole name for makefile",
+            "value": [
+                "Makefile",
+                "makefile"
+            ]
+        },
+        {
+            "opt": "-make=a",
+            "help": "Extension category for make tools",
+            "value": [
+                "mk",
+                "m4"
+            ]
+        }
+    ]
+}
