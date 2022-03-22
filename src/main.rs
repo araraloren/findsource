@@ -62,7 +62,6 @@ async fn main() -> color_eyre::Result<()> {
     loader
         .add_opt("--help=b")?
         .add_alias("-?")?
-        .add_alias("-h")?
         .set_help("Print help message")
         .commit()?;
 
@@ -73,10 +72,7 @@ async fn main() -> color_eyre::Result<()> {
     let args: Vec<String> = noa.iter().map(|v| v.to_string()).collect();
     let debug = value_of(&finder, "--debug", false);
     let display_help = value_of(&finder, "--help", false);
-    let loaded = finder["--load"]
-        .get_value_mut()
-        .take_vec()
-        .unwrap_or_default();
+    let loaded = finder["--load"].get_value_mut().take_vec();
 
     finder.set_policy(ForwardPolicy::default());
     finder.reset();
@@ -151,11 +147,8 @@ async fn main() -> color_eyre::Result<()> {
 
     let (sender, receiver) = unbounded();
 
-    if getoptd!(args.into_iter(), finder)?.is_none() || display_help || !finder["path"].has_value()
-    {
-        let mut help = getopt_help!(finder.get_set());
-        help.print_cmd_help(None)?;
-        return Ok(());
+    if getoptd!(args.into_iter(), finder)?.is_none() || display_help {
+        return print_help(finder.get_set(), None).await;
     }
 
     async_std::task::spawn(find_given_ext_in_directory(loaded, sender, finder, debug));
@@ -172,7 +165,7 @@ fn value_of(set: &SimpleSet, name: &str, default_value: bool) -> bool {
 }
 
 async fn find_given_ext_in_directory(
-    loaded: Vec<String>,
+    loaded: Option<Vec<String>>,
     sender: Sender<Option<String>>,
     mut parser: DynParser<SimpleSet, DefaultService>,
     debug: bool,
@@ -217,11 +210,13 @@ async fn find_given_ext_in_directory(
             }
         }
     }
-    for opt in loaded {
-        if only_checker(opt.as_str(), "") && !exclude_checker(opt.as_str(), "") {
-            if let Some(opt_exts) = parser[opt.as_ref()].get_value_mut().take_vec() {
-                for ext in opt_exts {
-                    exts.insert(ext);
+    if let Some(loaded) = loaded {
+        for opt in loaded {
+            if only_checker(opt.as_str(), "") && !exclude_checker(opt.as_str(), "") {
+                if let Some(opt_exts) = parser[opt.as_ref()].get_value_mut().take_vec() {
+                    for ext in opt_exts {
+                        exts.insert(ext);
+                    }
                 }
             }
         }
@@ -241,68 +236,92 @@ async fn find_given_ext_in_directory(
         whos = whos.into_iter().map(|v| v.to_lowercase()).collect();
     }
     if debug {
-        println!("match whole filename : {:?}", whos);
-        println!("match file extension : {:?}", exts);
+        eprintln!("match whole filename : {:?}", whos);
+        eprintln!("match file extension : {:?}", exts);
     }
     if whos.is_empty() && exts.is_empty() {
-        eprintln!("No extension found!");
-        let mut help = getopt_help!(parser.get_set());
-        help.print_cmd_help(None)?;
-        return Ok(());
+        if debug {
+            eprintln!("No extension found!");
+        }
+        return print_help(parser.get_set(), Some(sender)).await;
     }
-    if let Some(paths) = parser["path"].get_value().as_slice() {
-        let mut paths: Vec<PathBuf> = paths.iter().map(|v| PathBuf::from(v)).collect();
 
-        while !paths.is_empty() {
-            let mut next_paths = vec![];
+    let mut paths = vec![];
 
-            for path in paths {
-                let meta = async_std::fs::metadata(&path).await?;
+    if let Some(values) = parser["path"].get_value_mut().take_vec() {
+        for value in values {
+            paths.push(PathBuf::from(value));
+        }
+    }
+    if !atty::is(atty::Stream::Stdin) {
+        let mut buff = String::default();
 
-                if reverse && meta.is_dir() {
-                    let mut entries = path.read_dir().await?;
+        while let Ok(count) = std::io::stdin().read_line(&mut buff) {
+            if count > 0 {
+                paths.push(PathBuf::from(buff.trim()));
+            } else {
+                break;
+            }
+        }
+    }
+    if paths.is_empty() {
+        if debug {
+            eprintln!("No path need to search!");
+        }
+        return print_help(parser.get_set(), Some(sender)).await;
+    }
+    while !paths.is_empty() {
+        let mut next_paths = vec![];
 
-                    while let Some(entry) = entries.next().await {
-                        let entry = entry?;
+        if debug {
+            eprintln!("search file in path: {:?}", paths);
+        }
+        for path in paths {
+            let meta = async_std::fs::metadata(&path).await?;
 
-                        next_paths.push(entry.path())
-                    }
-                } else if meta.is_file() {
-                    if let Some(path_str) = path.to_str() {
-                        if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
-                            if !file_name.starts_with('.') || hidden {
-                                if debug {
-                                    println!("checking file {}", path_str);
-                                }
-                                if ignore_case {
-                                    if check_file_extension(
-                                        file_name.to_lowercase().as_ref(),
-                                        &whos,
-                                        &exts,
-                                    ) {
-                                        sender.send(Some(path_str.to_owned())).await?;
-                                    }
-                                } else {
-                                    if check_file_extension(file_name, &whos, &exts) {
-                                        sender.send(Some(path_str.to_owned())).await?;
-                                    }
+            if reverse && meta.is_dir() {
+                let mut entries = path.read_dir().await?;
+
+                while let Some(entry) = entries.next().await {
+                    let entry = entry?;
+
+                    next_paths.push(entry.path())
+                }
+            } else if meta.is_file() {
+                if let Some(path_str) = path.to_str() {
+                    if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
+                        if !file_name.starts_with('.') || hidden {
+                            if debug {
+                                println!("checking file {}", path_str);
+                            }
+                            if ignore_case {
+                                if check_file_extension(
+                                    file_name.to_lowercase().as_ref(),
+                                    &whos,
+                                    &exts,
+                                ) {
+                                    sender.send(Some(path_str.to_owned())).await?;
                                 }
                             } else {
-                                if debug {
-                                    println!("IGNORE file {}", path_str);
+                                if check_file_extension(file_name, &whos, &exts) {
+                                    sender.send(Some(path_str.to_owned())).await?;
                                 }
+                            }
+                        } else {
+                            if debug {
+                                println!("IGNORE file {}", path_str);
                             }
                         }
                     }
-                } else {
-                    println!("WARN: {:?} is not a valid file", path);
                 }
+            } else {
+                println!("WARN: {:?} is not a valid file", path);
             }
-            paths = next_paths;
         }
-
-        sender.send(None).await?;
+        paths = next_paths;
     }
+
+    sender.send(None).await?;
     Ok(())
 }
 
@@ -352,6 +371,20 @@ fn try_to_load_configuration(name: &str) -> color_eyre::Result<String> {
             name
         )))?
     }
+}
+
+async fn print_help(
+    set: &SimpleSet,
+    sender: Option<Sender<Option<String>>>,
+) -> color_eyre::Result<()> {
+    let mut help = getopt_help!(set);
+
+    help.print_cmd_help(None)?;
+
+    if let Some(sender) = sender {
+        sender.send(None).await?;
+    }
+    return Ok(());
 }
 
 mod opt_serde {
@@ -442,21 +475,35 @@ mod opt_serde {
             let prefixs: Vec<Ustr> = set.get_prefix().iter().map(|v| v.clone()).collect();
 
             if let Some(opt) = set.find_mut(self.get_opt())? {
-                opt.set_hint(self.get_hint().clone());
-                opt.set_help(self.get_help().clone());
-                self.insert_alias(opt.as_mut(), &prefixs);
-                self.insert_default_value(opt.as_mut());
+                if !self.hint.is_empty() {
+                    opt.set_hint(self.get_hint().clone());
+                }
+                if !self.help.is_empty() {
+                    opt.set_help(self.get_help().clone());
+                }
+                if !self.alias.is_empty() {
+                    self.insert_alias(opt.as_mut(), &prefixs);
+                }
+                if !self.value.is_empty() {
+                    self.insert_default_value(opt.as_mut());
+                }
             } else {
                 let mut commit = set.add_opt(self.get_opt())?;
 
-                commit.set_hint(self.get_hint());
-                commit.set_help(self.get_help());
+                if !self.hint.is_empty() {
+                    commit.set_hint(self.get_hint());
+                }
+                if !self.help.is_empty() {
+                    commit.set_help(self.get_help());
+                }
                 for alias in self.get_alias() {
                     commit.add_alias(alias.as_str())?;
                 }
-                commit.set_default_value(OptValue::Array(
-                    self.get_value().iter().map(|v| v.clone()).collect(),
-                ));
+                if !self.value.is_empty() {
+                    commit.set_default_value(OptValue::Array(
+                        self.get_value().iter().map(|v| v.clone()).collect(),
+                    ));
+                }
                 commit.commit()?;
             }
             Ok(())

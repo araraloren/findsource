@@ -1,6 +1,6 @@
 [package]
 name = "fs"
-version = "0.0.1"
+version = "0.0.4"
 edition = "2021"
 authors = [ "araraloren <blackcatoverwall@gmail.com>" ]
 description = "Simple configurable tool find source file with extension."
@@ -17,3 +17,4 @@ serde_json = { version = "1.0.79" }
 tracing-subscriber = { version = "0.3.2", features = ["env-filter"] }
 color-eyre = "0.5.11"
 async-std = { version = "1.10.0", features = ["std", "attributes"] }
+atty = "0.2.14"
