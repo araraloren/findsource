@@ -29,6 +29,10 @@ OPT:
 Create by araraloren <blackcatoverwall@gmail.com> v0.0.4
 ```
 
+## Get the release 
+
+Get [Release](https://github.com/araraloren/findsource/releases) here.
+
 ## LICENSE
 
 MPL-2.0
