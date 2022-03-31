@@ -29,6 +29,10 @@ OPT:
 Create by araraloren <blackcatoverwall@gmail.com> v0.0.4
 ```
 
+fs will search configuration file in `executable binary directory`, `working directory`,
+`current directory` and two custome directories1.
+First is set `FS_BUILD_CONFIG_DIR` in compile time, second is set `FS_CONFIG_DIR` in runtime.
+
 ## Get the release 
 
 Get [Release](https://github.com/araraloren/findsource/releases) here.

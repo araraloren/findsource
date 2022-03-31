@@ -15,6 +15,7 @@ async fn main() -> color_eyre::Result<()> {
         .init();
     color_eyre::install()?;
     let mut loader = DynParser::<SimpleSet, DefaultService>::new_policy(PrePolicy::default());
+    let config_directories = get_configuration_directories();
 
     loader
         .add_opt_cb(
@@ -28,12 +29,15 @@ async fn main() -> color_eyre::Result<()> {
                 if let Some(config_names) = value.as_slice() {
                     for config_name in config_names {
                         let config_name = format!("{}.json", config_name);
-                        let json_config = try_to_load_configuration(&config_name).map_err(|e| {
-                            create_error(format!(
-                                "Unknow configuration name {}: {:?}",
-                                config_name, e
-                            ))
-                        })?;
+                        let json_config =
+                            try_to_load_configuration(&config_directories, &config_name).map_err(
+                                |e| {
+                                    create_error(format!(
+                                        "Unknow configuration name {}: {:?}",
+                                        config_name, e
+                                    ))
+                                },
+                            )?;
                         let config: opt_serde::JsonOpt = serde_json::from_str(&json_config)
                             .map_err(|e| {
                                 create_error(format!(
@@ -292,7 +296,7 @@ async fn find_given_ext_in_directory(
                     if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
                         if !file_name.starts_with('.') || hidden {
                             if debug {
-                                println!("checking file {}", path_str);
+                                eprintln!("checking file {}", path_str);
                             }
                             if ignore_case {
                                 if check_file_extension(
@@ -309,13 +313,13 @@ async fn find_given_ext_in_directory(
                             }
                         } else {
                             if debug {
-                                println!("IGNORE file {}", path_str);
+                                eprintln!("IGNORE file {}", path_str);
                             }
                         }
                     }
                 }
-            } else {
-                println!("WARN: {:?} is not a valid file", path);
+            } else if debug {
+                eprintln!("WARN: {:?} is not a valid file", path);
             }
         }
         paths = next_paths;
@@ -343,34 +347,54 @@ fn check_file_extension(path: &str, whos: &HashSet<String>, exts: &HashSet<Strin
     false
 }
 
-fn try_to_load_configuration(name: &str) -> color_eyre::Result<String> {
-    let mut path = std::path::PathBuf::default();
+fn try_to_load_configuration(
+    config_directories: &[Option<std::path::PathBuf>],
+    name: &str,
+) -> color_eyre::Result<String> {
+    for path in config_directories.iter() {
+        if let Some(path) = path {
+            let config = path.join(name);
 
-    // find configuration in exe directory
-    if let Ok(mut exe) = std::env::current_exe() {
-        exe.pop();
-        path = exe.join(name);
-        // find configuration in working directory
-        if !path.is_file() {
-            if let Ok(dir) = std::env::current_dir() {
-                if dir.is_dir() {
-                    path = dir.join(name);
-                    if !path.is_file() {
-                        // find configuration in current directory
-                        path = std::path::PathBuf::new().join(".").join(name);
-                    }
-                }
+            if config.is_file() {
+                return Ok(std::fs::read_to_string(config)?);
             }
         }
     }
-    if path.is_file() {
-        Ok(std::fs::read_to_string(path)?)
-    } else {
-        Err(create_error(format!(
-            "Can not find configuration file {}",
-            name
-        )))?
+    let mut error_message = String::from("Can not find configuration file in ");
+
+    for path in config_directories.iter() {
+        if let Some(path) = path {
+            error_message += "'";
+            error_message += path.to_str().unwrap_or("None");
+            error_message += "' ";
+        }
     }
+    Err(create_error(error_message))?
+}
+
+fn get_configuration_directories() -> Vec<Option<std::path::PathBuf>> {
+    vec![
+        // find configuration in exe directory
+        std::env::current_exe().ok().and_then(|mut v| {
+            v.pop();
+            Some(v)
+        }),
+        // find configuration in working directory
+        std::env::current_dir().ok(),
+        // find directory in given directory(runtime)
+        std::env::var("FS_CONFIG_DIR")
+            .ok()
+            .and_then(|v| Some(std::path::PathBuf::from(v))),
+        Some(
+            // find configuration in given directory(compile time)
+            if let Some(env_compile_dir) = option_env!("FS_BUILD_CONFIG_DIR") {
+                std::path::PathBuf::from(env_compile_dir)
+            } else {
+                // or find in current directory
+                std::path::PathBuf::from(".")
+            },
+        ),
+    ]
 }
 
 async fn print_help(

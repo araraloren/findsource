@@ -1,6 +1,6 @@
 [package]
-name = "findsrouce"
-version = "0.0.4"
+name = "findsource"
+version = "0.0.5"
 edition = "2021"
 authors = [ "araraloren <blackcatoverwall@gmail.com>" ]
 description = "Simple configurable tool find source file with extension."
