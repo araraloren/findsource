@@ -379,21 +379,24 @@ fn get_configuration_directories() -> Vec<Option<std::path::PathBuf>> {
             v.pop();
             Some(v)
         }),
+        std::env::current_exe().ok().and_then(|mut v| {
+            v.pop();
+            if let Some(env_compile_dir) = option_env!("FS_BUILD_CONFIG_DIR") {
+                v.push(
+                    // find configuration in given directory(compile time)
+                    env_compile_dir,
+                );
+                Some(v)
+            } else {
+                None
+            }
+        }),
         // find configuration in working directory
         std::env::current_dir().ok(),
         // find directory in given directory(runtime)
         std::env::var("FS_CONFIG_DIR")
             .ok()
             .and_then(|v| Some(std::path::PathBuf::from(v))),
-        Some(
-            // find configuration in given directory(compile time)
-            if let Some(env_compile_dir) = option_env!("FS_BUILD_CONFIG_DIR") {
-                std::path::PathBuf::from(env_compile_dir)
-            } else {
-                // or find in current directory
-                std::path::PathBuf::from(".")
-            },
-        ),
     ]
 }
 

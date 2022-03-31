@@ -31,7 +31,8 @@ Create by araraloren <blackcatoverwall@gmail.com> v0.0.4
 
 fs will search configuration file in `executable binary directory`, `working directory`,
 `current directory` and two custome directories1.
-First is set `FS_BUILD_CONFIG_DIR` in compile time, second is set `FS_CONFIG_DIR` in runtime.
+First is `executable binary directory/FS_BUILD_CONFIG_DIR` which can set in compile time,
+second is `FS_CONFIG_DIR` which can set in runtime.
 
 ## Get the release 
 
