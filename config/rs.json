@@ -1,0 +1,11 @@
+{
+    "opts": [
+        {
+            "opt": "-rs=a",
+            "help": "Extension category for rust source file",
+            "value": [
+                "rs"
+            ]
+        }
+    ]
+}

@@ -26,11 +26,11 @@ OPT:
   -/r,--/reverse        b      Disable reverse mode
   -a,--hidden           b      Search hidden file
 
-Create by araraloren <blackcatoverwall@gmail.com> v0.0.4
+Create by araraloren <blackcatoverwall@gmail.com> v0.0.7
 ```
 
-fs will search configuration file in `executable binary directory`, `working directory`,
-`current directory` and two custome directories1.
+`fs` will search configuration file in `executable binary directory`, `working directory`,
+`current directory` and two custome directories.
 First is `executable binary directory/FS_BUILD_CONFIG_DIR` which can set in compile time,
 second is `FS_CONFIG_DIR` which can set in runtime.
 

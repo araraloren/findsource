@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use aopt::Result;
 use aopt::{err::create_error, prelude::*};
 use aopt_help::prelude::*;
 use async_std::{
@@ -14,149 +15,141 @@ async fn main() -> color_eyre::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     color_eyre::install()?;
-    let mut loader = DynParser::<SimpleSet, DefaultService>::new_policy(PrePolicy::default());
-    let config_directories = get_configuration_directories();
+    let mut loader = PreParser::default();
 
-    loader
-        .add_opt_cb(
-            "--load=a",
-            simple_opt_mut_cb!(move |uid, set: &mut SimpleSet, value| {
-                let mut ret = vec![];
+    getopt_add!(
+        loader,
+        "--load=a",
+        alias = "-l",
+        "Load option setting from configuration",
+    )?;
+    getopt_add!(loader, "--debug=b", alias = "-d", "Print debug message")?;
+    getopt_add!(loader, "--help=b", alias = "-?", "Print help message")?;
+    getopt_add!(
+        loader,
+        "--verbose=b",
+        alias = "-v",
+        "Print more debug message"
+    )?;
+
+    // load config name to loader
+    getopt!(&mut std::env::args().skip(1), loader)?;
+
+    let noa = loader.get_service().get_noa();
+    let args = noa.iter().map(|v| v.to_string());
+    let debug = value_of(&loader, "--debug", false);
+    let display_help = value_of(&loader, "--help", false);
+    let verbose = value_of(&loader, "--verbose", false);
+    let config_names = loader["--load"].get_value().as_vec();
+    let mut finder = ForwardParser::default();
+
+    getopt_add!(
+        finder,
+        "--whole=a",
+        alias = "-w",
+        "Extension category: match whole filename"
+    )?;
+    getopt_add!(
+        finder,
+        "--Whole=a",
+        alias = "-W",
+        "Exclude given whole filename"
+    )?;
+    getopt_add!(
+        finder,
+        "--extension=a",
+        alias = "-e",
+        "Extension category: match file extension"
+    )?;
+    getopt_add!(
+        finder,
+        "--Extension=a",
+        alias = "-E",
+        "Exclude given file extension"
+    )?;
+    getopt_add!(
+        finder,
+        "--ignore-case=b",
+        alias = "-i",
+        "Enable ignore case mode"
+    )?;
+    getopt_add!(
+        finder,
+        "--exclude=a",
+        alias = "-x",
+        "Exclude given file category"
+    )?;
+    getopt_add!(
+        finder,
+        "--only=s",
+        alias = "-o",
+        "Only search given file category"
+    )?;
+    getopt_add!(finder, "--reverse=b/", alias = "-r", "Disable reverse mode")?;
+    getopt_add!(finder, "--hidden=b", alias = "-a", "Search hidden file")?;
+    getopt_add!(
+        finder,
+        "path=p@*",
+        "[file or directory]+",
+        simple_pos_mut_cb!(move |uid, set: &mut SimpleSet, path, _, _| {
+            let metadata = std::fs::metadata(path)
+                .map_err(|e| create_error(format!("Can not get metadata for {}: {:?}", path, e)))?;
+            if !metadata.is_file() && !metadata.is_dir() {
+                Err(create_error(format!("{} is not a valid path!", path)))
+            } else {
+                let mut ret = vec![path.to_string()];
 
                 if let Some(inner_value) = set[uid].get_value_mut().take_vec() {
-                    ret = inner_value;
-                }
-                if let Some(config_names) = value.as_slice() {
-                    for config_name in config_names {
-                        let config_name = format!("{}.json", config_name);
-                        let json_config =
-                            try_to_load_configuration(&config_directories, &config_name).map_err(
-                                |e| {
-                                    create_error(format!(
-                                        "Unknow configuration name {}: {:?}",
-                                        config_name, e
-                                    ))
-                                },
-                            )?;
-                        let config: opt_serde::JsonOpt = serde_json::from_str(&json_config)
-                            .map_err(|e| {
-                                create_error(format!(
-                                    "Unknow configuration format of {}: {:?}",
-                                    config_name, e
-                                ))
-                            })?;
-
-                        for opt in config.opts {
-                            ret.push(opt.get_opt().to_string());
-                            opt.add_self_to(set)?;
-                        }
+                    for value in inner_value {
+                        ret.push(value);
                     }
                 }
                 Ok(Some(OptValue::from(ret)))
-            }),
-        )?
-        .add_alias("-l")?
-        .set_help("Load option setting from configuration")
-        .commit()?;
-    loader
-        .add_opt("--debug=b")?
-        .add_alias("-d")?
-        .set_help("Print debug message")
-        .commit()?;
-    loader
-        .add_opt("--help=b")?
-        .add_alias("-?")?
-        .set_help("Print help message")
-        .commit()?;
+            }
+        })
+    )?;
+    let config_directories = get_configuration_directories();
+    let mut options = vec![];
 
-    getoptd!(&mut std::env::args().skip(1), loader)?;
-
-    let mut finder = loader;
-    let noa = finder.get_service().get_noa();
-    let args: Vec<String> = noa.iter().map(|v| v.to_string()).collect();
-    let debug = value_of(&finder, "--debug", false);
-    let display_help = value_of(&finder, "--help", false);
-    let loaded = finder["--load"].get_value_mut().take_vec();
-
-    finder.set_policy(ForwardPolicy::default());
-    finder.reset();
-    finder
-        .add_opt("--whole=a")?
-        .add_alias("-w")?
-        .set_help("Extension category: match whole filename")
-        .commit()?;
-    finder
-        .add_opt("--Whole=a")?
-        .add_alias("-W")?
-        .set_help("Exclude given whole filename")
-        .commit()?;
-    finder
-        .add_opt("--extension=a")?
-        .add_alias("-e")?
-        .set_help("Extension category: match file extension")
-        .commit()?;
-    finder
-        .add_opt("--Extension=a")?
-        .add_alias("-E")?
-        .set_help("Exclude given file extension")
-        .commit()?;
-    finder
-        .add_opt("--ignore-case=b")?
-        .add_alias("-i")?
-        .set_help("Enable ignore case mode")
-        .commit()?;
-    finder
-        .add_opt("--exclude=a")?
-        .add_alias("-x")?
-        .set_help("Exclude given file category")
-        .commit()?;
-    finder
-        .add_opt("--only=s")?
-        .add_alias("-o")?
-        .set_help("Only search given file category")
-        .commit()?;
-    finder
-        .add_opt("--reverse=b/")?
-        .add_alias("-r")?
-        .set_help("Disable reverse mode")
-        .commit()?;
-    finder
-        .add_opt("--hidden=b")?
-        .add_alias("-a")?
-        .set_help("Search hidden file")
-        .commit()?;
-    finder
-        .add_opt_cb(
-            "path=p@*",
-            simple_pos_mut_cb!(move |uid, set: &mut SimpleSet, path, _, _| {
-                let metadata = std::fs::metadata(path).map_err(|e| {
-                    create_error(format!("Can not get metadata for {}: {:?}", path, e))
+    if let Some(config_names) = config_names {
+        for config_name in config_names {
+            let config_name = format!("{}.json", config_name);
+            let json_config = try_to_load_configuration(&config_directories, &config_name)
+                .map_err(|e| {
+                    create_error(format!(
+                        "Unknow configuration name {}: {:?}",
+                        &config_name, e
+                    ))
                 })?;
-                if !metadata.is_file() && !metadata.is_dir() {
-                    Err(create_error(format!("{} is not a valid path!", path)))
-                } else {
-                    let mut ret = vec![path.to_string()];
+            let config: opt_serde::JsonOpt = serde_json::from_str(&json_config).map_err(|e| {
+                create_error(format!(
+                    "Unknow configuration format of {}: {:?}",
+                    &config_name, e
+                ))
+            })?;
 
-                    if let Some(inner_value) = set[uid].get_value_mut().take_vec() {
-                        for value in inner_value {
-                            ret.push(value);
-                        }
-                    }
-                    Ok(Some(OptValue::from(ret)))
+            if debug {
+                eprintln!("load config {:?}", &config_name);
+            }
+            for opt in config.opts {
+                options.push(*opt.get_opt());
+                opt.add_self_to(finder.get_set_mut())?;
+                if debug && verbose {
+                    eprintln!("load option {} from config", opt.get_opt());
                 }
-            }),
-        )?
-        .set_help("[file or directory]+")
-        .commit()?;
+            }
+        }
+    }
 
     let (sender, receiver) = unbounded();
 
-    if getoptd!(args.into_iter(), finder)?.is_none() || display_help {
-        return print_help(finder.get_set(), None).await;
+    // parsing option from left arguments
+    if getopt!(args, finder)?.is_none() || display_help {
+        return print_help(loader.get_set(), finder.get_set()).await;
     }
-
-    async_std::task::spawn(find_given_ext_in_directory(loaded, sender, finder, debug));
-
+    async_std::task::spawn(find_given_ext_in_directory(
+        options, sender, finder, debug, verbose,
+    ));
     while let Ok(Some(data)) = receiver.recv().await {
         println!("{}", data);
     }
@@ -169,13 +162,15 @@ fn value_of(set: &SimpleSet, name: &str, default_value: bool) -> bool {
 }
 
 async fn find_given_ext_in_directory(
-    loaded: Option<Vec<String>>,
+    options: Vec<Ustr>,
     sender: Sender<Option<String>>,
-    mut parser: DynParser<SimpleSet, DefaultService>,
+    mut parser: Parser<SimpleSet, DefaultService, ForwardPolicy>,
     debug: bool,
+    verbose: bool,
 ) -> color_eyre::Result<()> {
     let mut whos = HashSet::<String>::default();
     let mut exts = HashSet::<String>::default();
+    let mut paths = vec![];
 
     let only = parser["--only"].get_value_mut().take_str();
     let exclude = parser["--exclude"].get_value_mut().take_vec();
@@ -190,13 +185,13 @@ async fn find_given_ext_in_directory(
 
     let only_checker = |name1: &str, name2: &str| -> bool {
         only.as_ref()
-            .and_then(|only| Some(only.eq(name1) || only.eq(name2)))
+            .map(|only| only.eq(name1) || only.eq(name2))
             .unwrap_or(true)
     };
     let exclude_checker = move |name1: &str, name2: &str| -> bool {
         exclude
             .as_ref()
-            .and_then(|ex| Some(ex.iter().any(|v| v.eq(name1) || v.eq(name2))))
+            .map(|ex| ex.iter().any(|v| v.eq(name1) || v.eq(name2)))
             .unwrap_or(false)
     };
 
@@ -214,13 +209,11 @@ async fn find_given_ext_in_directory(
             }
         }
     }
-    if let Some(loaded) = loaded {
-        for opt in loaded {
-            if only_checker(opt.as_str(), "") && !exclude_checker(opt.as_str(), "") {
-                if let Some(opt_exts) = parser[opt.as_ref()].get_value_mut().take_vec() {
-                    for ext in opt_exts {
-                        exts.insert(ext);
-                    }
+    for opt in options {
+        if only_checker(opt.as_str(), "") && !exclude_checker(opt.as_str(), "") {
+            if let Some(opt_exts) = parser[opt.as_ref()].get_value_mut().take_vec() {
+                for ext in opt_exts {
+                    exts.insert(ext);
                 }
             }
         }
@@ -244,14 +237,9 @@ async fn find_given_ext_in_directory(
         eprintln!("match file extension : {:?}", exts);
     }
     if whos.is_empty() && exts.is_empty() {
-        if debug {
-            eprintln!("No extension found!");
-        }
-        return print_help(parser.get_set(), Some(sender)).await;
+        println!("What extension or filename do you want search, try command: fs -?",);
+        return Ok(());
     }
-
-    let mut paths = vec![];
-
     if let Some(values) = parser["path"].get_value_mut().take_vec() {
         for value in values {
             paths.push(PathBuf::from(value));
@@ -269,15 +257,13 @@ async fn find_given_ext_in_directory(
         }
     }
     if paths.is_empty() {
-        if debug {
-            eprintln!("No path need to search!");
-        }
-        return print_help(parser.get_set(), Some(sender)).await;
+        println!("Which path do you want search, try command: fs -?",);
+        return Ok(());
     }
     while !paths.is_empty() {
         let mut next_paths = vec![];
 
-        if debug {
+        if debug && verbose {
             eprintln!("search file in path: {:?}", paths);
         }
         for path in paths {
@@ -306,15 +292,11 @@ async fn find_given_ext_in_directory(
                                 ) {
                                     sender.send(Some(path_str.to_owned())).await?;
                                 }
-                            } else {
-                                if check_file_extension(file_name, &whos, &exts) {
-                                    sender.send(Some(path_str.to_owned())).await?;
-                                }
+                            } else if check_file_extension(file_name, &whos, &exts) {
+                                sender.send(Some(path_str.to_owned())).await?;
                             }
-                        } else {
-                            if debug {
-                                eprintln!("IGNORE file {}", path_str);
-                            }
+                        } else if debug {
+                            eprintln!("IGNORE file {}", path_str);
                         }
                     }
                 }
@@ -331,53 +313,43 @@ async fn find_given_ext_in_directory(
 
 fn check_file_extension(path: &str, whos: &HashSet<String>, exts: &HashSet<String>) -> bool {
     match path.rfind('.') {
-        None | Some(0) => {
-            if whos.contains(path) {
-                return true;
-            }
-        }
+        None | Some(0) => whos.contains(path),
         Some(pos) => {
             let (_, ext) = path.split_at(pos + 1);
 
-            if exts.contains(ext) {
-                return true;
-            }
+            exts.contains(ext) || whos.contains(path)
         }
     }
-    false
 }
 
 fn try_to_load_configuration(
     config_directories: &[Option<std::path::PathBuf>],
     name: &str,
-) -> color_eyre::Result<String> {
-    for path in config_directories.iter() {
-        if let Some(path) = path {
-            let config = path.join(name);
+) -> Result<String> {
+    for path in config_directories.iter().flatten() {
+        let config = path.join(name);
 
-            if config.is_file() {
-                return Ok(std::fs::read_to_string(config)?);
-            }
+        if config.is_file() {
+            return std::fs::read_to_string(&config)
+                .map_err(|e| create_error(format!("Can not read from {:?}: {:?}", &config, e)));
         }
     }
     let mut error_message = String::from("Can not find configuration file in ");
 
-    for path in config_directories.iter() {
-        if let Some(path) = path {
-            error_message += "'";
-            error_message += path.to_str().unwrap_or("None");
-            error_message += "' ";
-        }
+    for path in config_directories.iter().flatten() {
+        error_message += "'";
+        error_message += path.to_str().unwrap_or("None");
+        error_message += "' ";
     }
-    Err(create_error(error_message))?
+    Err(create_error(error_message))
 }
 
 fn get_configuration_directories() -> Vec<Option<std::path::PathBuf>> {
     vec![
         // find configuration in exe directory
-        std::env::current_exe().ok().and_then(|mut v| {
+        std::env::current_exe().ok().map(|mut v| {
             v.pop();
-            Some(v)
+            v
         }),
         std::env::current_exe().ok().and_then(|mut v| {
             v.pop();
@@ -396,22 +368,40 @@ fn get_configuration_directories() -> Vec<Option<std::path::PathBuf>> {
         // find directory in given directory(runtime)
         std::env::var("FS_CONFIG_DIR")
             .ok()
-            .and_then(|v| Some(std::path::PathBuf::from(v))),
+            .map(std::path::PathBuf::from),
     ]
 }
 
-async fn print_help(
-    set: &SimpleSet,
-    sender: Option<Sender<Option<String>>>,
-) -> color_eyre::Result<()> {
-    let mut help = getopt_help!(set);
+async fn print_help(set: &SimpleSet, finder_set: &SimpleSet) -> color_eyre::Result<()> {
+    let mut help = getopt_help!(finder_set);
 
-    help.print_cmd_help(None)?;
+    help.set_name("fs".into());
 
-    if let Some(sender) = sender {
-        sender.send(None).await?;
+    let global = help.store.get_global_mut();
+    for opt in set.opt_iter() {
+        if opt.match_style(aopt::opt::Style::Pos) {
+            global.add_pos(PosStore::new(
+                opt.get_name(),
+                opt.get_hint(),
+                opt.get_help(),
+                opt.get_index().unwrap().to_string().into(),
+                opt.get_optional(),
+            ));
+        } else if opt.match_style(aopt::opt::Style::Argument)
+            || opt.match_style(aopt::opt::Style::Boolean)
+            || opt.match_style(aopt::opt::Style::Multiple)
+        {
+            global.add_opt(OptStore::new(
+                opt.get_name(),
+                opt.get_hint(),
+                opt.get_help(),
+                opt.get_type_name(),
+                opt.get_optional(),
+            ));
+        }
     }
-    return Ok(());
+    help.print_cmd_help(None)?;
+    Ok(())
 }
 
 mod opt_serde {
@@ -499,14 +489,14 @@ mod opt_serde {
         // }
 
         pub fn add_self_to<S: Set>(&self, set: &mut S) -> aopt::Result<()> {
-            let prefixs: Vec<Ustr> = set.get_prefix().iter().map(|v| v.clone()).collect();
+            let prefixs: Vec<Ustr> = set.get_prefix().to_vec();
 
-            if let Some(opt) = set.find_mut(self.get_opt())? {
+            if let Ok(Some(opt)) = set.find_mut(self.get_opt()) {
                 if !self.hint.is_empty() {
-                    opt.set_hint(self.get_hint().clone());
+                    opt.set_hint(*self.get_hint());
                 }
                 if !self.help.is_empty() {
-                    opt.set_help(self.get_help().clone());
+                    opt.set_help(*self.get_help());
                 }
                 if !self.alias.is_empty() {
                     self.insert_alias(opt.as_mut(), &prefixs);
@@ -527,9 +517,7 @@ mod opt_serde {
                     commit.add_alias(alias.as_str())?;
                 }
                 if !self.value.is_empty() {
-                    commit.set_default_value(OptValue::Array(
-                        self.get_value().iter().map(|v| v.clone()).collect(),
-                    ));
+                    commit.set_default_value(OptValue::Array(self.get_value().to_vec()));
                 }
                 commit.commit()?;
             }
@@ -541,7 +529,7 @@ mod opt_serde {
                 for prefix in prefixs.iter() {
                     if alias.starts_with(prefix.as_str()) {
                         if let Some(name) = alias.get(prefix.len()..) {
-                            opt.add_alias(prefix.clone(), name.into());
+                            opt.add_alias(*prefix, name.into());
                             break;
                         }
                     }
@@ -552,9 +540,9 @@ mod opt_serde {
         fn insert_default_value(&self, opt: &mut dyn aopt::opt::Opt) {
             let mut value = Vec::with_capacity(self.get_value().len());
 
-            opt.get_default_value()
-                .as_slice()
-                .and_then(|v| Some(value.extend_from_slice(v)));
+            if let Some(v) = opt.get_default_value().as_slice() {
+                value.extend_from_slice(v);
+            }
             value.extend_from_slice(self.get_value());
             opt.set_default_value(OptValue::from(value));
         }
