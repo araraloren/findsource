@@ -11,9 +11,6 @@ use async_std::{
 
 #[async_std::main]
 async fn main() -> color_eyre::Result<()> {
-    tracing_subscriber::fmt::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
     color_eyre::install()?;
     let mut loader = PreParser::default();
 
@@ -142,9 +139,23 @@ async fn main() -> color_eyre::Result<()> {
     }
 
     let (sender, receiver) = unbounded();
+    let ret = getopt!(args, finder); // parsing option from left arguments
+    let has_sepcial_error = if let Err(e) = &ret {
+        e.is_special()
+    } else {
+        ret?;
+        return Ok(());
+    };
+    let no_option_matched = if let Ok(opt) = &ret {
+        opt.is_none()
+    } else {
+        false
+    };
 
-    // parsing option from left arguments
-    if getopt!(args, finder)?.is_none() || display_help {
+    if has_sepcial_error || no_option_matched || display_help {
+        if has_sepcial_error {
+            eprintln!("{}\n", ret.unwrap_err());
+        }
         return print_help(loader.get_set(), finder.get_set()).await;
     }
     async_std::task::spawn(find_given_ext_in_directory(
@@ -237,7 +248,7 @@ async fn find_given_ext_in_directory(
         eprintln!("match file extension : {:?}", exts);
     }
     if whos.is_empty() && exts.is_empty() {
-        println!("What extension or filename do you want search, try command: fs -?",);
+        println!("What extension or filename do you want search, try command: fs -? or fs --help",);
         return Ok(());
     }
     if let Some(values) = parser["path"].get_value_mut().take_vec() {
