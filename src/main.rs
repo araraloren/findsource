@@ -143,15 +143,13 @@ async fn main() -> color_eyre::Result<()> {
     let has_sepcial_error = if let Err(e) = &ret {
         e.is_special()
     } else {
-        ret?;
-        return Ok(());
+        false
     };
     let no_option_matched = if let Ok(opt) = &ret {
         opt.is_none()
     } else {
         false
     };
-
     if has_sepcial_error || no_option_matched || display_help {
         if has_sepcial_error {
             eprintln!("{}\n", ret.unwrap_err());
