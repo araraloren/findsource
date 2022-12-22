@@ -5,7 +5,7 @@ Find source file with extension easily!
 ## Help
 
 ```txt
-Usage: fs [-d,--debug] [-?,--help] [-v,--verbose] [-l,--load CFG|PATH] [-w,--whole] [-W,--Whole] [-e,--extension] [-E,--Extension] [-X,--Exclude] [-i,--ignore-case] [-o,--only] [-/r,--/reverse] [-a,--hidden] [ARGS]
+Usage: fs [-d,--debug] [-?,--help] [-v,--verbose] [-l,--load CFG|PATH] [-w,--whole] [-W,--Whole] [-e,--extension] [-E,--Extension] [-X,--Exclude] [-i,--ignore-case] [-o,--only] [-/r,--/reverse] [-a,--hidden] [-f,--full] [ARGS]
 
 Simple configurable tool find source file with extension.
 
@@ -23,11 +23,12 @@ OPTION:
   -o,--only               Only search given file category
   -/r,--/reverse          Disable reverse mode
   -a,--hidden             Search hidden file
+  -f,--full               Display absolute path of matched file
 
 ARGS:
   [PATH]+      Path need to be search
 
-Create by araraloren <blackcatoverwall@gmail.com> v0.1.1
+Create by araraloren <blackcatoverwall@gmail.com> v0.1.2
 ```
 
 `fs` will search configuration file in `executable binary directory`, `working directory`,
