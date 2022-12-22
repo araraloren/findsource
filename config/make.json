@@ -1,7 +1,8 @@
 {
     "opts": [
         {
-            "opt": "-w=a",
+            "id": "whole",
+            "option": "-w=s",
             "help": "Whole name for makefile",
             "value": [
                 "Makefile",
@@ -9,7 +10,8 @@
             ]
         },
         {
-            "opt": "-make=a",
+            "id": "make",
+            "option": "-mk=s",
             "help": "Extension category for make tools",
             "value": [
                 "mk",

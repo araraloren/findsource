@@ -1,14 +1,16 @@
 {
     "opts": [
         {
-            "opt": "-c=a",
+            "id": "c",
+            "option": "-c=s",
             "help": "Extension category for c source file",
             "value": [
                 "c"
             ]
         },
         {
-            "opt": "-h=a",
+            "id": "header",
+            "option": "-h=s",
             "help": "Extension category for header file",
             "value": [
                 "h"

@@ -1,7 +1,8 @@
 {
     "opts": [
         {
-            "opt": "-rs=a",
+            "id": "rust",
+            "option": "-rs=s",
             "help": "Extension category for rust source file",
             "value": [
                 "rs"

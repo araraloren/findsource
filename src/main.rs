@@ -1,240 +1,218 @@
+use opt_serde::JsonOpt;
+use std::borrow::Cow;
 use std::collections::HashSet;
+use std::ops::Deref;
+use std::path::PathBuf;
+use tokio::fs::read_dir;
+use tokio::spawn;
+use tokio::sync::mpsc::{channel, Sender};
 
-use aopt::Result;
-use aopt::{err::create_error, prelude::*};
-use aopt_help::prelude::*;
-use async_std::{
-    channel::{unbounded, Sender},
-    path::PathBuf,
-    prelude::StreamExt,
-};
+use aopt::prelude::*;
+use aopt::Error;
+use aopt_help::prelude::Block;
+use aopt_help::prelude::Store;
+use cote::prelude::*;
 
-#[async_std::main]
+#[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
-    let mut loader = PreParser::default();
+    let mut loader = APreParser::default();
+    let config_directories = get_configuration_directories();
+    let mut config_options = vec![];
 
-    getopt_add!(
-        loader,
-        "--load=a",
-        alias = "-l",
-        "Load option setting from configuration",
-    )?;
-    getopt_add!(loader, "--debug=b", alias = "-d", "Print debug message")?;
-    getopt_add!(loader, "--help=b", alias = "-?", "Print help message")?;
-    getopt_add!(
-        loader,
-        "--verbose=b",
-        alias = "-v",
-        "Print more debug message"
-    )?;
+    loader
+        .add_opt("--debug=b")?
+        .add_alias("-d")
+        .set_help("Print debug message");
+    loader
+        .add_opt("--help=b")?
+        .add_alias("-?")
+        .set_help("Print help message");
+    loader
+        .add_opt("--verbose=b")?
+        .add_alias("-v")
+        .set_help("Print more debug message");
+    loader
+        .add_opt("--load=s")?
+        .add_alias("-l")
+        .set_hint("-l CFG|PATH")
+        .set_help("Load option setting from configuration")
+        .set_values(Vec::<JsonOpt>::new())
+        .on(
+            move |set: &mut ASet, ser: &mut ASer, cfg: ctx::Value<String>| {
+                let (path, config) = try_to_load_configuration2(&config_directories, cfg.as_str())?;
+
+                if *ser.sve_val(set["--debug"].uid())? {
+                    eprintln!("... loading config {:?}", &path);
+                }
+                Ok(Some(config))
+            },
+        )?;
 
     // load config name to loader
-    getopt!(&mut std::env::args().skip(1), loader)?;
+    getopt!(std::env::args().skip(1), &mut loader)?;
 
-    let noa = loader.get_service().get_noa();
-    let args = noa.iter().map(|v| v.to_string());
-    let debug = value_of(&loader, "--debug", false);
-    let display_help = value_of(&loader, "--help", false);
-    let verbose = value_of(&loader, "--verbose", false);
-    let config_names = loader["--load"].get_value().as_vec();
-    let mut finder = ForwardParser::default();
+    let ret_value = loader.take_retval().unwrap_or_default();
+    let debug = *loader.find_val("--debug")?;
+    let mut display_help = *loader.find_val("--help")?;
+    let verbose = *loader.find_val("--verbose")?;
+    let mut default_jsons: JsonOpt = serde_json::from_str(default_json_configuration()).unwrap();
+    let jsons = loader.find_vals_mut::<JsonOpt>("--load")?;
+    let mut finder = Cote::<AFwdPolicy>::default();
 
-    getopt_add!(
-        finder,
-        "--whole=a",
-        alias = "-w",
-        "Extension category: match whole filename"
-    )?;
-    getopt_add!(
-        finder,
-        "--Whole=a",
-        alias = "-W",
-        "Exclude given whole filename"
-    )?;
-    getopt_add!(
-        finder,
-        "--extension=a",
-        alias = "-e",
-        "Extension category: match file extension"
-    )?;
-    getopt_add!(
-        finder,
-        "--Extension=a",
-        alias = "-E",
-        "Exclude given file extension"
-    )?;
-    getopt_add!(
-        finder,
-        "--ignore-case=b",
-        alias = "-i",
-        "Enable ignore case mode"
-    )?;
-    getopt_add!(
-        finder,
-        "--exclude=a",
-        alias = "-x",
-        "Exclude given file category"
-    )?;
-    getopt_add!(
-        finder,
-        "--only=s",
-        alias = "-o",
-        "Only search given file category"
-    )?;
-    getopt_add!(finder, "--reverse=b/", alias = "-r", "Disable reverse mode")?;
-    getopt_add!(finder, "--hidden=b", alias = "-a", "Search hidden file")?;
-    getopt_add!(
-        finder,
-        "path=p@*",
-        "[file or directory]+",
-        simple_pos_mut_cb!(move |uid, set: &mut SimpleSet, path, _, _| {
-            let metadata = std::fs::metadata(path)
-                .map_err(|e| create_error(format!("Can not get metadata for {}: {:?}", path, e)))?;
-            if !metadata.is_file() && !metadata.is_dir() {
-                Err(create_error(format!("{} is not a valid path!", path)))
+    finder
+        .add_opt("path=p@1..")?
+        .set_hint("[PATH]+")
+        .set_help("Path need to be search")
+        .on(
+            move |_: &mut ASet, _: &mut ASer, mut path: ctx::Value<PathBuf>| {
+                if debug {
+                    eprintln!("... prepare searching path: {:?}", path.deref());
+                }
+                if !path.is_file() && !path.is_dir() {
+                    Err(Error::raise_error(format!(
+                        "{:?} is not a valid path!",
+                        path
+                    )))
+                } else {
+                    Ok(Some(path.take()))
+                }
+            },
+        )?;
+    // merge the json configurations
+    for json in jsons {
+        for cfg in json.iter().cloned() {
+            if !config_options.contains(cfg.option()) {
+                config_options.push(cfg.option().clone());
+            }
+            default_jsons.add_cfg(cfg);
+        }
+    }
+    if debug {
+        eprintln!(
+            "... loading cfg: {}",
+            serde_json::to_string_pretty(&default_jsons)?
+        );
+        eprintln!("... loading options: {:?}", config_options);
+    }
+    // add the option to finder
+    default_jsons.add_to(&mut finder)?;
+    // initialize the option value
+    finder.init()?;
+
+    let ret = finder.parse(aopt::Arc::new(Args::from(
+        ret_value.into_args().into_iter(),
+    )));
+    let (sender, mut receiver) = channel(512);
+
+    match ret {
+        Ok(None) => {
+            display_help = true;
+        }
+        Err(e) => {
+            if debug && e.is_failure() {
+                eprintln!("Got a failure: {}\n", e);
+                display_help = true;
             } else {
-                let mut ret = vec![path.to_string()];
-
-                if let Some(inner_value) = set[uid].get_value_mut().take_vec() {
-                    for value in inner_value {
-                        ret.push(value);
-                    }
-                }
-                Ok(Some(OptValue::from(ret)))
-            }
-        })
-    )?;
-    let config_directories = get_configuration_directories();
-    let mut options = vec![];
-
-    if let Some(config_names) = config_names {
-        for config_name in config_names {
-            let config_name = format!("{}.json", config_name);
-            let json_config = try_to_load_configuration(&config_directories, &config_name)
-                .map_err(|e| {
-                    create_error(format!(
-                        "Unknow configuration name {}: {:?}",
-                        &config_name, e
-                    ))
-                })?;
-            let config: opt_serde::JsonOpt = serde_json::from_str(&json_config).map_err(|e| {
-                create_error(format!(
-                    "Unknow configuration format of {}: {:?}",
-                    &config_name, e
-                ))
-            })?;
-
-            if debug {
-                eprintln!("load config {:?}", &config_name);
-            }
-            for opt in config.opts {
-                options.push(*opt.get_opt());
-                opt.add_self_to(finder.get_set_mut())?;
-                if debug && verbose {
-                    eprintln!("load option {} from config", opt.get_opt());
-                }
+                panic!("{}", e)
             }
         }
+        _ => {}
     }
-
-    let (sender, receiver) = unbounded();
-    let ret = getopt!(args, finder); // parsing option from left arguments
-    let has_sepcial_error = if let Err(e) = &ret {
-        e.is_special()
-    } else {
-        false
-    };
-    let no_option_matched = if let Ok(opt) = &ret {
-        opt.is_none()
-    } else {
-        false
-    };
-    if has_sepcial_error || no_option_matched || display_help {
-        if has_sepcial_error {
-            eprintln!("{}\n", ret.unwrap_err());
-        }
-        return print_help(loader.get_set(), finder.get_set()).await;
+    if display_help {
+        return print_help(loader.optset(), finder.optset()).await;
     }
-    async_std::task::spawn(find_given_ext_in_directory(
-        options, sender, finder, debug, verbose,
+    if debug {
+        eprintln!("... Starting search thread ...");
+    }
+    spawn(find_given_ext_in_directory(
+        config_options,
+        sender,
+        finder,
+        debug,
+        verbose,
     ));
-    while let Ok(Some(data)) = receiver.recv().await {
+    while let Some(Some(data)) = receiver.recv().await {
         println!("{}", data);
     }
-
+    if debug {
+        eprintln!("... Searching end");
+    }
     Ok(())
 }
 
-fn value_of(set: &SimpleSet, name: &str, default_value: bool) -> bool {
-    *set[name].get_value().as_bool().unwrap_or(&default_value)
-}
-
 async fn find_given_ext_in_directory(
-    options: Vec<Ustr>,
+    options: Vec<String>,
     sender: Sender<Option<String>>,
-    mut parser: Parser<SimpleSet, DefaultService, ForwardPolicy>,
+    parser: Cote<AFwdPolicy>,
     debug: bool,
     verbose: bool,
 ) -> color_eyre::Result<()> {
     let mut whos = HashSet::<String>::default();
     let mut exts = HashSet::<String>::default();
-    let mut paths = vec![];
+    let mut paths = parser.find_vals("path")?.clone();
 
-    let only = parser["--only"].get_value_mut().take_str();
-    let exclude = parser["--exclude"].get_value_mut().take_vec();
-    let ex_exts = parser["--Extension"].get_value_mut().take_vec();
-    let ex_whos = parser["--Whole"].get_value_mut().take_vec();
-    let whole = parser["--whole"].get_value_mut().take_vec();
-    let extension = parser["--extension"].get_value_mut().take_vec();
+    if debug {
+        eprintln!("... Got search path: {:?}", paths);
+    }
 
-    let ignore_case = value_of(&parser, "--ignore-case", false);
-    let reverse = value_of(&parser, "--reverse", true);
-    let hidden = value_of(&parser, "--hidden", false);
+    let only = parser.find_val::<String>("--only");
+    let exclude = parser.find_vals::<String>("--Exclude");
+    let ex_exts = parser.find_vals::<String>("--Extension");
+    let ex_whos = parser.find_vals::<String>("--Whole");
+    let whole = parser.find_vals::<String>("--whole");
+    let extension = parser.find_vals::<String>("--extension");
+
+    let ignore_case = *parser.find_val("--ignore-case")?;
+    let reverse = *parser.find_val("--reverse")?;
+    let hidden = *parser.find_val("--hidden")?;
 
     let only_checker = |name1: &str, name2: &str| -> bool {
-        only.as_ref()
-            .map(|only| only.eq(name1) || only.eq(name2))
-            .unwrap_or(true)
+        if let Ok(only) = only {
+            only.eq(name1) || only.eq(name2)
+        } else {
+            true
+        }
     };
     let exclude_checker = move |name1: &str, name2: &str| -> bool {
-        exclude
-            .as_ref()
-            .map(|ex| ex.iter().any(|v| v.eq(name1) || v.eq(name2)))
-            .unwrap_or(false)
+        if let Ok(exclude) = exclude {
+            exclude.iter().any(|v| v.eq(name1) || v.eq(name2))
+        } else {
+            false
+        }
     };
 
     if only_checker("whole", "w") && !exclude_checker("whole", "w") {
-        if let Some(opt_exts) = whole {
-            for ext in opt_exts {
-                whos.insert(ext);
+        if let Ok(whole) = whole {
+            for ext in whole {
+                whos.insert(ext.clone());
             }
         }
     }
     if only_checker("extension", "e") && !exclude_checker("extension", "e") {
-        if let Some(opt_exts) = extension {
-            for ext in opt_exts {
-                exts.insert(ext);
+        if let Ok(extension) = extension {
+            for ext in extension {
+                whos.insert(ext.clone());
             }
         }
     }
     for opt in options {
         if only_checker(opt.as_str(), "") && !exclude_checker(opt.as_str(), "") {
-            if let Some(opt_exts) = parser[opt.as_ref()].get_value_mut().take_vec() {
+            if let Ok(opt_exts) = parser.find_vals::<String>(opt.as_str()) {
                 for ext in opt_exts {
-                    exts.insert(ext);
+                    exts.insert(ext.clone());
                 }
             }
         }
     }
-    if let Some(ex_exts) = ex_exts {
+    if let Ok(ex_exts) = ex_exts {
         for ext in ex_exts {
-            exts.remove(&ext);
+            exts.remove(ext);
         }
     }
-    if let Some(ex_whos) = ex_whos {
+    if let Ok(ex_whos) = ex_whos {
         for ext in ex_whos {
-            whos.remove(&ext);
+            whos.remove(ext);
         }
     }
     if ignore_case {
@@ -248,11 +226,6 @@ async fn find_given_ext_in_directory(
     if whos.is_empty() && exts.is_empty() {
         println!("What extension or filename do you want search, try command: fs -? or fs --help",);
         return Ok(());
-    }
-    if let Some(values) = parser["path"].get_value_mut().take_vec() {
-        for value in values {
-            paths.push(PathBuf::from(value));
-        }
     }
     if !atty::is(atty::Stream::Stdin) {
         let mut buff = String::default();
@@ -276,14 +249,12 @@ async fn find_given_ext_in_directory(
             eprintln!("search file in path: {:?}", paths);
         }
         for path in paths {
-            let meta = async_std::fs::metadata(&path).await?;
+            let meta = tokio::fs::metadata(&path).await?;
 
             if reverse && meta.is_dir() {
-                let mut entries = path.read_dir().await?;
+                let mut entries = read_dir(path).await?;
 
-                while let Some(entry) = entries.next().await {
-                    let entry = entry?;
-
+                while let Some(entry) = entries.next_entry().await? {
                     next_paths.push(entry.path())
                 }
             } else if meta.is_file() {
@@ -331,26 +302,129 @@ fn check_file_extension(path: &str, whos: &HashSet<String>, exts: &HashSet<Strin
     }
 }
 
-fn try_to_load_configuration(
+fn try_to_load_configuration2(
     config_directories: &[Option<std::path::PathBuf>],
     name: &str,
-) -> Result<String> {
-    for path in config_directories.iter().flatten() {
-        let config = path.join(name);
+) -> Result<(PathBuf, JsonOpt), Error> {
+    let mut config = PathBuf::from(name);
 
-        if config.is_file() {
-            return std::fs::read_to_string(&config)
-                .map_err(|e| create_error(format!("Can not read from {:?}: {:?}", &config, e)));
+    // search in config directories
+    for path in config_directories.iter().flatten() {
+        let handler = path.join(&name);
+
+        if handler.is_file() {
+            config = handler;
+            break;
         }
     }
-    let mut error_message = String::from("Can not find configuration file in ");
+    // if argument is a valid path
+    if config.is_file() {
+        let context = std::fs::read_to_string(&config)
+            .map_err(|e| Error::raise_error(format!("Can not read from {:?}: {:?}", &config, e)))?;
 
-    for path in config_directories.iter().flatten() {
-        error_message += "'";
-        error_message += path.to_str().unwrap_or("None");
-        error_message += "' ";
+        Ok((
+            config,
+            serde_json::from_str(&context).map_err(|e| {
+                Error::raise_error(format!("Invalid configuration format: {:?}", e))
+            })?,
+        ))
+    } else {
+        let mut error_message = String::from("Can not find configuration file in ");
+
+        for path in config_directories.iter().flatten() {
+            error_message += "'";
+            error_message += path.to_str().unwrap_or("None");
+            error_message += "' ";
+        }
+        Err(Error::raise_error(error_message))
     }
-    Err(create_error(error_message))
+}
+
+fn default_json_configuration() -> &'static str {
+    r#"
+    {
+        "opts": [
+            {
+                "id": "whole",
+                "option": "-w=s",
+                "help": "Extension category: match whole filename",
+                "alias": [
+                    "--whole"
+                ],
+                "value": []
+            },
+            {
+                "id": "Whole",
+                "option": "-W=s",
+                "help": "Exclude given whole filename",
+                "alias": [
+                    "--Whole"
+                ],
+                "value": []
+            },
+            {
+                "id": "ext",
+                "option": "-e=s",
+                "help": "Extension category: match file extension",
+                "alias": [
+                    "--extension"
+                ],
+                "value": []
+            },
+            {
+                "id": "Ext",
+                "option": "-E=s",
+                "help": "Exclude given file extension",
+                "alias": [
+                    "--Extension"
+                ],
+                "value": []
+            },
+            {
+                "id": "X",
+                "option": "-X=s",
+                "help": "Exclude given file category",
+                "alias": [
+                    "--Exclude"
+                ],
+                "value": []
+            },
+            {
+                "id": "ignore",
+                "option": "--ignore-case=b",
+                "help": "Enable ignore case mode",
+                "alias": [
+                    "-i"
+                ]
+            },
+            {
+                "id": "only",
+                "option": "--only=s",
+                "help": "Only search given file category",
+                "alias": [
+                    "-o"
+                ],
+                "value": []
+            },
+            {
+                "id": "reverse",
+                "option": "--reverse=b/",
+                "help": "Disable reverse mode",
+                "alias": [
+                    "-r"
+                ]
+            },
+            {
+                "id": "hidden",
+                "option": "--hidden=b",
+                "help": "Search hidden file",
+                "alias": [
+                    "-a"
+                ]
+            }
+        ]
+    }
+    "#
 }
 
 fn get_configuration_directories() -> Vec<Option<std::path::PathBuf>> {
@@ -381,179 +455,143 @@ fn get_configuration_directories() -> Vec<Option<std::path::PathBuf>> {
     ]
 }
 
-async fn print_help(set: &SimpleSet, finder_set: &SimpleSet) -> color_eyre::Result<()> {
-    let mut help = getopt_help!(finder_set);
+async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
+    let foot = format!(
+        "Create by {} v{}",
+        env!("CARGO_PKG_AUTHORS"),
+        env!("CARGO_PKG_VERSION")
+    );
+    let head = format!("{}", env!("CARGO_PKG_DESCRIPTION"));
+    let mut app_help = aopt_help::AppHelp::new(
+        "fs",
+        &head,
+        &foot,
+        aopt_help::prelude::Style::default(),
+        std::io::stdout(),
+    );
+    let global = app_help.global_mut();
+    let sets = [set, finder_set];
 
-    help.set_name("fs".into());
-
-    let global = help.store.get_global_mut();
-    for opt in set.opt_iter() {
-        if opt.match_style(aopt::opt::Style::Pos) {
-            global.add_pos(PosStore::new(
-                opt.get_name(),
-                opt.get_hint(),
-                opt.get_help(),
-                opt.get_index().unwrap().to_string().into(),
-                opt.get_optional(),
-            ));
-        } else if opt.match_style(aopt::opt::Style::Argument)
-            || opt.match_style(aopt::opt::Style::Boolean)
-            || opt.match_style(aopt::opt::Style::Multiple)
-        {
-            global.add_opt(OptStore::new(
-                opt.get_name(),
-                opt.get_hint(),
-                opt.get_help(),
-                opt.get_type_name(),
-                opt.get_optional(),
-            ));
+    global.add_block(Block::new("command", "<COMMAND>", "", "COMMAND:", ""))?;
+    global.add_block(Block::new("option", "", "", "OPTION:", ""))?;
+    global.add_block(Block::new("args", "[ARGS]", "", "ARGS:", ""))?;
+    for set in sets {
+        for opt in set.iter() {
+            if opt.mat_style(Style::Pos) {
+                global.add_store(
+                    "args",
+                    Store::new(
+                        Cow::from(opt.name().as_str()),
+                        Cow::from(opt.hint().as_str()),
+                        Cow::from(opt.help().as_str()),
+                        Cow::from(opt.r#type().to_string()),
+                        opt.optional(),
+                        true,
+                    ),
+                )?;
+            } else if opt.mat_style(Style::Cmd) {
+                global.add_store(
+                    "command",
+                    Store::new(
+                        Cow::from(opt.name().as_str()),
+                        Cow::from(opt.hint().as_str()),
+                        Cow::from(opt.help().as_str()),
+                        Cow::from(opt.r#type().to_string()),
+                        opt.optional(),
+                        true,
+                    ),
+                )?;
+            } else if opt.mat_style(Style::Argument)
+                || opt.mat_style(Style::Boolean)
+                || opt.mat_style(Style::Combined)
+            {
+                global.add_store(
+                    "option",
+                    Store::new(
+                        Cow::from(opt.name().as_str()),
+                        Cow::from(opt.hint().as_str()),
+                        Cow::from(opt.help().as_str()),
+                        Cow::from(opt.r#type().to_string()),
+                        opt.optional(),
+                        false,
+                    ),
+                )?;
+            }
         }
     }
-    help.print_cmd_help(None)?;
+    app_help.display(true)?;
+
     Ok(())
 }
 
 mod opt_serde {
-    use aopt::prelude::*;
+    use std::ops::Deref;
+    use std::ops::DerefMut;
+
+    use cote::prelude::aopt::prelude::AFwdPolicy;
+    use cote::prelude::MetaConfig;
+    use cote::Cote;
+    use cote::Error;
     use serde::Deserialize;
     use serde::Serialize;
 
-    #[derive(Debug, Default, Deserialize, Serialize)]
+    #[derive(Debug, Default, Clone, Deserialize, Serialize)]
     pub struct JsonOpt {
-        pub opts: Vec<OptSerde>,
+        opts: Vec<MetaConfig<String>>,
     }
 
-    #[derive(Debug, Default, Deserialize, Serialize)]
-    pub struct OptSerde {
-        opt: Ustr,
-        #[serde(default)]
-        hint: Ustr,
-        #[serde(default)]
-        help: Ustr,
-        #[serde(default)]
-        alias: Vec<Ustr>,
-        #[serde(default)]
-        value: Vec<String>,
+    impl Deref for JsonOpt {
+        type Target = Vec<MetaConfig<String>>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.opts
+        }
     }
 
-    impl OptSerde {
-        pub fn get_opt(&self) -> &Ustr {
-            &self.opt
+    impl DerefMut for JsonOpt {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.opts
         }
+    }
 
-        pub fn get_hint(&self) -> &Ustr {
-            &self.hint
-        }
-
-        pub fn get_help(&self) -> &Ustr {
-            &self.help
-        }
-
-        pub fn get_alias(&self) -> &Vec<Ustr> {
-            &self.alias
-        }
-
-        pub fn get_value(&self) -> &Vec<String> {
-            &self.value
-        }
-
-        // pub fn set_opt(&mut self, opt: Ustr) {
-        //     self.opt = opt;
-        // }
-
-        // pub fn set_hint(&mut self, hint: Ustr) {
-        //     self.hint = hint;
-        // }
-
-        // pub fn set_help(&mut self, help: Ustr) {
-        //     self.help = help;
-        // }
-
-        // pub fn set_alias(&mut self, alias: Vec<Ustr>) {
-        //     self.alias = alias;
-        // }
-
-        // pub fn set_value(&mut self, value: Vec<String>) {
-        //     self.value = value;
-        // }
-
-        // pub fn get_opt_mut(&mut self) -> &mut Ustr {
-        //     &mut self.opt
-        // }
-
-        // pub fn get_hint_mut(&mut self) -> &mut Ustr {
-        //     &mut self.hint
-        // }
-
-        // pub fn get_help_mut(&mut self) -> &mut Ustr {
-        //     &mut self.help
-        // }
-
-        // pub fn get_alias_mut(&mut self) -> &mut Vec<Ustr> {
-        //     &mut self.alias
-        // }
-
-        // pub fn get_value_mut(&mut self) -> &mut Vec<String> {
-        //     &mut self.value
-        // }
-
-        pub fn add_self_to<S: Set>(&self, set: &mut S) -> aopt::Result<()> {
-            let prefixs: Vec<Ustr> = set.get_prefix().to_vec();
-
-            if let Ok(Some(opt)) = set.find_mut(self.get_opt()) {
-                if !self.hint.is_empty() {
-                    opt.set_hint(*self.get_hint());
-                }
-                if !self.help.is_empty() {
-                    opt.set_help(*self.get_help());
-                }
-                if !self.alias.is_empty() {
-                    self.insert_alias(opt.as_mut(), &prefixs);
-                }
-                if !self.value.is_empty() {
-                    self.insert_default_value(opt.as_mut());
-                }
-            } else {
-                let mut commit = set.add_opt(self.get_opt())?;
-
-                if !self.hint.is_empty() {
-                    commit.set_hint(self.get_hint());
-                }
-                if !self.help.is_empty() {
-                    commit.set_help(self.get_help());
-                }
-                for alias in self.get_alias() {
-                    commit.add_alias(alias.as_str())?;
-                }
-                if !self.value.is_empty() {
-                    commit.set_default_value(OptValue::Array(self.get_value().to_vec()));
-                }
-                commit.commit()?;
+    impl JsonOpt {
+        pub fn add_to(self, cote: &mut Cote<AFwdPolicy>) -> Result<(), Error> {
+            for meta in self.opts.into_iter() {
+                cote.add_meta(meta)?;
             }
             Ok(())
         }
 
-        fn insert_alias(&self, opt: &mut dyn aopt::opt::Opt, prefixs: &[Ustr]) {
-            for alias in self.get_alias().iter() {
-                for prefix in prefixs.iter() {
-                    if alias.starts_with(prefix.as_str()) {
-                        if let Some(name) = alias.get(prefix.len()..) {
-                            opt.add_alias(*prefix, name.into());
-                            break;
-                        }
+        pub fn add_cfg(&mut self, mut cfg: MetaConfig<String>) -> &mut Self {
+            let opt = self.opts.iter_mut().find(|v| v.id() == cfg.id());
+
+            match opt {
+                Some(opt) => {
+                    if opt.option().is_empty() {
+                        opt.set_option(cfg.take_option());
                     }
+                    if opt.hint().is_none() {
+                        opt.set_hint(cfg.take_hint());
+                    }
+                    if opt.help().is_none() {
+                        opt.set_help(cfg.take_help());
+                    }
+                    if opt.action().is_none() {
+                        opt.set_action(cfg.take_action());
+                    }
+                    if opt.assoc().is_none() {
+                        opt.set_assoc(cfg.take_assoc());
+                    }
+                    if opt.alias().is_none() {
+                        opt.set_alias(cfg.take_alias());
+                    }
+                    opt.merge_value(&mut cfg);
+                }
+                None => {
+                    self.opts.push(cfg);
                 }
             }
-        }
-
-        fn insert_default_value(&self, opt: &mut dyn aopt::opt::Opt) {
-            let mut value = Vec::with_capacity(self.get_value().len());
-
-            if let Some(v) = opt.get_default_value().as_slice() {
-                value.extend_from_slice(v);
-            }
-            value.extend_from_slice(self.get_value());
-            opt.set_default_value(OptValue::from(value));
+            self
         }
     }
 }

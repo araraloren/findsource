@@ -1,7 +1,8 @@
 {
     "opts": [
         {
-            "opt": "-cpp=a",
+            "id": "cpp",
+            "option": "-cpp=s",
             "help": "Extension category for c source file",
             "value": [
                 "C",
@@ -12,7 +13,8 @@
             ]
         },
         {
-            "opt": "-h=a",
+            "id": "header",
+            "option": "-h=s",
             "help": "Extension category for header file",
             "value": [
                 "h",

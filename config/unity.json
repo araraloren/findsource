@@ -1,7 +1,8 @@
 {
     "opts": [
         {
-            "opt": "-unity=a",
+            "id": "unity",
+            "option": "-unity=s",
             "help": "Extension category for unity",
             "value": [
                 "meta"

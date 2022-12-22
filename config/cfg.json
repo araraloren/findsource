@@ -1,7 +1,8 @@
 {
     "opts": [
         {
-            "opt": "-cfg=a",
+            "id": "cfg",
+            "option": "-cfg=s",
             "help": "Extension category for configuration",
             "value": [
                 "cfg",
