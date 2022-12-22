@@ -306,11 +306,12 @@ fn try_to_load_configuration2(
     config_directories: &[Option<std::path::PathBuf>],
     name: &str,
 ) -> Result<(PathBuf, JsonOpt), Error> {
+    let cfg_name = format!("{}.json", name);
     let mut config = PathBuf::from(name);
 
     // search in config directories
     for path in config_directories.iter().flatten() {
-        let handler = path.join(&name);
+        let handler = path.join(&cfg_name);
 
         if handler.is_file() {
             config = handler;
