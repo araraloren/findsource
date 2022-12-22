@@ -1,13 +1,13 @@
 # findsource
 
-Simple configurable tool for searching source files using extensions easily!
+Simple configurable tool for searching source files by extensions easily!
 
 ## Help
 
 ```txt
 Usage: fs [-d,--debug] [-?,--help] [-v,--verbose] [-l,--load CFG|PATH] [-w,--whole] [-W,--Whole] [-e,--extension] [-E,--Extension] [-X,--Exclude] [-i,--ignore-case] [-o,--only] [-/r,--/reverse] [-a,--hidden] [-f,--full] [ARGS]
 
-Simple configurable tool for searching source files using extensions easily!
+Simple configurable tool for searching source files by extensions easily!
 
 OPTION:
   -d,--debug              Print debug message
