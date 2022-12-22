@@ -35,8 +35,8 @@ async fn main() -> color_eyre::Result<()> {
     loader
         .add_opt("--load=s")?
         .add_alias("-l")
-        .set_hint("-l CFG|PATH")
-        .set_help("Load option setting from configuration")
+        .set_hint("-l,--load CFG|PATH")
+        .set_help("Load option setting from configuration name or file")
         .set_values(Vec::<JsonOpt>::new())
         .on(
             move |set: &mut ASet, ser: &mut ASer, cfg: ctx::Value<String>| {
