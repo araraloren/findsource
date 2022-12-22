@@ -1,13 +1,13 @@
 # findsource
 
-Find source file with extension easily!
+Simple configurable tool for searching source files using extensions easily!
 
 ## Help
 
 ```txt
 Usage: fs [-d,--debug] [-?,--help] [-v,--verbose] [-l,--load CFG|PATH] [-w,--whole] [-W,--Whole] [-e,--extension] [-E,--Extension] [-X,--Exclude] [-i,--ignore-case] [-o,--only] [-/r,--/reverse] [-a,--hidden] [-f,--full] [ARGS]
 
-Simple configurable tool find source file with extension.
+Simple configurable tool for searching source files using extensions easily!
 
 OPTION:
   -d,--debug              Print debug message
@@ -31,10 +31,10 @@ ARGS:
 Create by araraloren <blackcatoverwall@gmail.com> v0.1.2
 ```
 
-`fs` will search configuration file in `executable binary directory`, `working directory`,
+`fs` will search for the configuration file in `executable binary directory`, `working directory`,
 `current directory` and two custome directories.
-First is `executable binary directory/FS_BUILD_CONFIG_DIR` which can set in compile time,
-second is `FS_CONFIG_DIR` which can set in runtime.
+The first is `executable binary directory/FS_BUILD_CONFIG_DIR` which can be set at compile time,
+then `FS_CONFIG_DIR` which can be set at runtime.
 
 ## Get the release 
 
