@@ -162,6 +162,7 @@ async fn find_given_ext_in_directory(
     let ex_whos = parser.find_vals::<String>("--Whole");
     let whole = parser.find_vals::<String>("--whole");
     let extension = parser.find_vals::<String>("--extension");
+    let full = *parser.find_val("--full")?;
 
     let ignore_case = *parser.find_val("--ignore-case")?;
     let reverse = *parser.find_val("--reverse")?;
@@ -258,7 +259,9 @@ async fn find_given_ext_in_directory(
                     next_paths.push(entry.path())
                 }
             } else if meta.is_file() {
-                if let Some(path_str) = path.to_str() {
+                let may_full_path = if full { dunce::canonicalize(&path)? } else {  path.clone() };
+
+                if let Some(path_str) = may_full_path.to_str() {
                     if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
                         if !file_name.starts_with('.') || hidden {
                             if debug {
@@ -421,6 +424,14 @@ fn default_json_configuration() -> &'static str {
                 "help": "Search hidden file",
                 "alias": [
                     "-a"
+                ]
+            },
+            {
+                "id": "full",
+                "option": "--full=b",
+                "help": "Display absolute path of matched file",
+                "alias": [
+                    "-f"
                 ]
             }
         ]

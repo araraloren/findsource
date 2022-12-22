@@ -1,6 +1,6 @@
 [package]
 name = "findsource"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = [ "araraloren <blackcatoverwall@gmail.com>" ]
 description = "Simple configurable tool find source file with extension."
@@ -22,3 +22,4 @@ serde_json = { version = "1.0.79" }
 color-eyre = "0.5.11"
 tokio = { version = "1.23", features = ["full"] }
 atty = "0.2.14"
+dunce = "1.0"
