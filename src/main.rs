@@ -60,6 +60,7 @@ async fn main() -> color_eyre::Result<()> {
     let jsons = loader.find_vals_mut::<JsonOpt>("--load")?;
     let mut finder = Cote::<AFwdPolicy>::default();
 
+    finder.set_auto_help(false);
     finder
         .add_opt("path=p@1..")?
         .set_hint("[PATH]+")
@@ -165,7 +166,7 @@ async fn find_given_ext_in_directory(
     let full = *parser.find_val("--full")?;
 
     let ignore_case = *parser.find_val("--ignore-case")?;
-    let reverse = *parser.find_val("--reverse")?;
+    let reverse = !*parser.find_val::<bool>("--/reverse")?;
     let hidden = *parser.find_val("--hidden")?;
 
     let only_checker = |name1: &str, name2: &str| -> bool {
@@ -412,10 +413,10 @@ fn default_json_configuration() -> &'static str {
             },
             {
                 "id": "reverse",
-                "option": "--reverse=b/",
+                "option": "--/reverse=b",
                 "help": "Disable reverse mode",
                 "alias": [
-                    "-r"
+                    "-/r"
                 ]
             },
             {
@@ -497,7 +498,7 @@ async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
                         Cow::from(opt.hint().as_str()),
                         Cow::from(opt.help().as_str()),
                         Cow::from(opt.r#type().to_string()),
-                        opt.optional(),
+                        !opt.force(),
                         true,
                     ),
                 )?;
@@ -509,7 +510,7 @@ async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
                         Cow::from(opt.hint().as_str()),
                         Cow::from(opt.help().as_str()),
                         Cow::from(opt.r#type().to_string()),
-                        opt.optional(),
+                        !opt.force(),
                         true,
                     ),
                 )?;
@@ -524,7 +525,7 @@ async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
                         Cow::from(opt.hint().as_str()),
                         Cow::from(opt.help().as_str()),
                         Cow::from(opt.r#type().to_string()),
-                        opt.optional(),
+                        !opt.force(),
                         false,
                     ),
                 )?;
