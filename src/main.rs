@@ -194,7 +194,7 @@ async fn find_given_ext_in_directory(
     if only_checker("extension", "e") && !exclude_checker("extension", "e") {
         if let Ok(extension) = extension {
             for ext in extension {
-                whos.insert(ext.clone());
+                exts.insert(ext.clone());
             }
         }
     }
