@@ -126,20 +126,37 @@ async fn main() -> color_eyre::Result<()> {
     if debug {
         eprintln!("... Starting search thread ...");
     }
-    spawn(find_given_ext_in_directory(
-        config_options,
-        sender,
-        finder,
-        debug,
-        verbose,
-    ));
-    while let Some(Some(data)) = receiver.recv().await {
-        println!("{}", data);
-    }
+    let printer = spawn(async move {
+        while let Some(Some(data)) = receiver.recv().await {
+            println!("{}", data);
+        }
+    });
+    find_given_ext_in_directory(config_options, sender, finder, debug, verbose).await?;
+    let _ = printer.await?;
     if debug {
         eprintln!("... Searching end");
     }
     Ok(())
+}
+
+pub struct Context<'a> {
+    debug: bool,
+
+    verbose: bool,
+
+    full: bool,
+
+    hidden: bool,
+
+    reverse: bool,
+
+    ignore_case: bool,
+
+    whos: &'a HashSet<String>,
+
+    exts: &'a HashSet<String>,
+
+    sender: &'a Sender<Option<String>>,
 }
 
 async fn find_given_ext_in_directory(
@@ -244,54 +261,130 @@ async fn find_given_ext_in_directory(
         println!("Which path do you want search, try command: fs -?",);
         return Ok(());
     }
+
+    let ctx: Context<'_> = Context {
+        full,
+        debug,
+        verbose,
+        hidden,
+        reverse,
+        ignore_case,
+        whos: &whos,
+        exts: &exts,
+        sender: &sender,
+    };
+
     while !paths.is_empty() {
         let mut next_paths = vec![];
 
-        if debug && verbose {
+        if ctx.debug && ctx.verbose {
             eprintln!("search file in path: {:?}", paths);
         }
         for path in paths {
             let meta = tokio::fs::metadata(&path).await?;
 
-            if reverse && meta.is_dir() {
-                let mut entries = read_dir(path).await?;
-
-                while let Some(entry) = entries.next_entry().await? {
-                    next_paths.push(entry.path())
+            if ctx.reverse && meta.is_dir() {
+                if let Err(e) = process_directory(&path, &mut next_paths, &ctx).await {
+                    eprintln!("Error: can not access directory `{:?}`: {:?}", path, e);
                 }
             } else if meta.is_file() {
-                let may_full_path = if full { dunce::canonicalize(&path)? } else {  path.clone() };
-
-                if let Some(path_str) = may_full_path.to_str() {
-                    if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
-                        if !file_name.starts_with('.') || hidden {
-                            if debug {
-                                eprintln!("checking file {}", path_str);
-                            }
-                            if ignore_case {
-                                if check_file_extension(
-                                    file_name.to_lowercase().as_ref(),
-                                    &whos,
-                                    &exts,
-                                ) {
-                                    sender.send(Some(path_str.to_owned())).await?;
-                                }
-                            } else if check_file_extension(file_name, &whos, &exts) {
-                                sender.send(Some(path_str.to_owned())).await?;
-                            }
-                        } else if debug {
-                            eprintln!("IGNORE file {}", path_str);
-                        }
-                    }
+                if let Err(e) = process_file(&path, &mut next_paths, &ctx).await {
+                    eprintln!("Error: can not access file `{:?}`: {:?}", path, e);
                 }
-            } else if debug {
+            } else if ctx.debug {
                 eprintln!("WARN: {:?} is not a valid file", path);
             }
         }
+        if ctx.debug && ctx.verbose {
+            eprintln!("next search file in path: {:?}", next_paths);
+        }
         paths = next_paths;
     }
-
     sender.send(None).await?;
+    Ok(())
+}
+
+pub async fn process_directory<'a>(
+    path: &PathBuf,
+    next_paths: &mut Vec<PathBuf>,
+    &Context {
+        debug,
+        verbose,
+        full: _,
+        hidden,
+        reverse: _,
+        ignore_case: _,
+        whos: _,
+        exts: _,
+        sender: _,
+    }: &Context<'a>,
+) -> color_eyre::Result<()> {
+    let path = if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
+        if !(file_name.starts_with('.') || file_name.starts_with("$")) || hidden {
+            Some(path)
+        } else {
+            None
+        }
+    } else {
+        Some(path)
+    };
+    if let Some(path) = path {
+        if debug {
+            eprintln!("checking directory {:?}", path);
+        }
+        let mut entries = read_dir(path).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            if debug && verbose {
+                eprintln!("add directory to next paths {:?}", path);
+            }
+            next_paths.push(entry.path())
+        }
+    } else if debug {
+        eprintln!("IGNORE directory {:?}", path);
+    }
+    Ok(())
+}
+
+pub async fn process_file<'a>(
+    path: &PathBuf,
+    _next_paths: &mut Vec<PathBuf>,
+    &Context {
+        debug,
+        verbose: _,
+        full,
+        hidden,
+        reverse: _,
+        ignore_case,
+        whos,
+        exts,
+        sender,
+    }: &Context<'a>,
+) -> color_eyre::Result<()> {
+    let may_full_path = if full {
+        dunce::canonicalize(&path)?
+    } else {
+        path.clone()
+    };
+
+    if let Some(path_str) = may_full_path.to_str() {
+        if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
+            if !file_name.starts_with('.') && !file_name.starts_with("$") || hidden {
+                if debug {
+                    eprintln!("checking file {}", path_str);
+                }
+                if ignore_case {
+                    if check_file_extension(file_name.to_lowercase().as_ref(), &whos, &exts) {
+                        sender.send(Some(path_str.to_owned())).await?;
+                    }
+                } else if check_file_extension(file_name, &whos, &exts) {
+                    sender.send(Some(path_str.to_owned())).await?;
+                }
+            } else if debug {
+                eprintln!("IGNORE file {}", path_str);
+            }
+        }
+    }
     Ok(())
 }
 
