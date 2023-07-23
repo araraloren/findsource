@@ -5,7 +5,8 @@ Simple configurable tool for searching source files by extensions easily!
 ## Help
 
 ```txt
-Usage: fs [-d,--debug] [-?,--help] [-v,--verbose] [-l,--load CFG|PATH] [-w,--whole] [-W,--Whole] [-e,--extension] [-E,--Extension] [-X,--Exclude] [-i,--ignore-case] [-o,--only] [-/r,--/reverse] [-a,--hidden] [-f,--full] [ARGS]
+Usage: fs [-d,--debug] [-?,--help] [-v,--verbose] [-l,--load CFG|PATH] [-w,--whole] [-W,--Whole] [-e,--extension] [-E,--Extension]
+       [-X,--Exclude] [-i,--ignore-case] [-o,--only] [-/r,--/reverse] [-a,--hidden] [-f,--full] [-inv,--invert] [ARGS]
 
 Simple configurable tool for searching source files by extensions easily!
 
@@ -13,7 +14,8 @@ OPTION:
   -d,--debug              Print debug message
   -?,--help               Print help message
   -v,--verbose            Print more debug message
-  -l,--load CFG|PATH      Load option setting from configuration name or file
+  -l,--load CFG|PATH      Load option setting from configuration
+                          name or file
   -w,--whole              Extension category: match whole filename
   -W,--Whole              Exclude given whole filename
   -e,--extension          Extension category: match file extension
@@ -24,11 +26,12 @@ OPTION:
   -/r,--/reverse          Disable reverse mode
   -a,--hidden             Search hidden file
   -f,--full               Display absolute path of matched file
-
+  -inv,--invert           Invert the entrie logical to exclude the
+                          given extension
 ARGS:
   [PATH]+      Path need to be search
 
-Create by araraloren <blackcatoverwall@gmail.com> v0.1.2
+Create by araraloren <blackcatoverwall@gmail.com> v0.2.0
 ```
 
 `fs` will search for the configuration file in `executable binary directory`, `working directory`,
