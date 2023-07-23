@@ -1,251 +1,157 @@
+use cote::aopt::prelude::AFwdParser;
+use cote::aopt::prelude::APreParser;
 use opt_serde::JsonOpt;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::thread;
 use tokio::fs::read_dir;
-use tokio::spawn;
-use tokio::sync::mpsc::{channel, Sender};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
 
-use aopt::prelude::*;
+use aopt::prelude::getopt;
 use aopt::Error;
 use aopt_help::prelude::Block;
 use aopt_help::prelude::Store;
-use cote::prelude::*;
+use cote::*;
+
+macro_rules! note {
+    ($fmt:literal) => {
+        let _ = tokio::io::stderr().write(&format!(concat!($fmt, "\n")).as_bytes()).await?;
+    };
+    ($fmt:literal, $($code:tt)+) => {
+        let _ = tokio::io::stderr().write(&format!(concat!($fmt, "\n"), $($code)*).as_bytes()).await?;
+    };
+}
+
+macro_rules! say {
+    ($fmt:literal) => {
+        let _ = tokio::io::stdout().write(&format!(concat!($fmt, "\n")).as_bytes()).await?;
+    };
+    ($fmt:literal, $($code:tt)*) => {
+        let _ = tokio::io::stdout().write(&format!(concat!($fmt, "\n"), $($code)*).as_bytes()).await?;
+    };
+}
+
+macro_rules! start_worker {
+    ($ctx:ident, $path:expr, $func:expr, $fmt:expr) => {
+        async move {
+            let worker_ctx = $ctx;
+
+            if let Err(e) = $func(Arc::clone(&worker_ctx), $path.clone()).await {
+                note!($fmt, $path, e);
+            }
+            Context::dec_worker_count(Arc::clone(&worker_ctx)).await;
+            Result::<(), color_eyre::Report>::Ok(())
+        }
+    };
+}
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
-    let mut loader = APreParser::default();
     let config_directories = get_configuration_directories();
-    let mut config_options = vec![];
+    let mut loader = APreParser::default();
 
+    loader.add_opt("-d;--debug=b: Print debug message")?;
+    loader.add_opt("-?;--help=b: Print help message")?;
+    loader.add_opt("-v;--verbose=b: Print more debug message")?;
     loader
-        .add_opt("--debug=b")?
-        .add_alias("-d")
-        .set_help("Print debug message");
-    loader
-        .add_opt("--help=b")?
-        .add_alias("-?")
-        .set_help("Print help message");
-    loader
-        .add_opt("--verbose=b")?
-        .add_alias("-v")
-        .set_help("Print more debug message");
-    loader
-        .add_opt("--load=s")?
-        .add_alias("-l")
+        .add_opt("-l;--load=s: Load option setting from configuration name or file")?
         .set_hint("-l,--load CFG|PATH")
-        .set_help("Load option setting from configuration name or file")
-        .set_values(Vec::<JsonOpt>::new())
+        .set_values_t(Vec::<JsonOpt>::new())
         .on(
-            move |set: &mut ASet, ser: &mut ASer, cfg: ctx::Value<String>| {
+            move |set: &mut ASet, _: &mut ASer, cfg: ctx::Value<String>| {
                 let (path, config) = try_to_load_configuration2(&config_directories, cfg.as_str())?;
 
-                if *ser.sve_val(set["--debug"].uid())? {
-                    eprintln!("... loading config {:?}", &path);
+                if *set.find_val::<bool>("--debug")? {
+                    eprintln!("INFO: ... loading config {:?}", &path);
                 }
                 Ok(Some(config))
             },
         )?;
 
     // load config name to loader
-    getopt!(std::env::args().skip(1), &mut loader)?;
+    let GetoptRes {
+        mut ret,
+        parser: loader,
+    } = getopt!(Args::from_env(), &mut loader)?;
+    let debug = loader.take_val("--debug")?;
+    let verbose = loader.take_val("--verbose")?;
+    let load_jsons: Vec<JsonOpt> = loader.take_vals::<JsonOpt>("--load").unwrap_or_default();
+    let display_help = loader.take_val("--help")?;
+    let mut finder = AFwdParser::default();
 
-    let ret_value = loader.take_retval().unwrap_or_default();
-    let debug = *loader.find_val("--debug")?;
-    let mut display_help = *loader.find_val("--help")?;
-    let verbose = *loader.find_val("--verbose")?;
-    let mut default_jsons: JsonOpt = serde_json::from_str(default_json_configuration()).unwrap();
-    let jsons = loader.find_vals_mut::<JsonOpt>("--load")?;
-    let mut finder = Cote::<AFwdPolicy>::default();
-
-    finder.set_auto_help(false);
     finder
-        .add_opt("path=p@1..")?
+        .add_opt("path=p@1..: Path need to be search")?
+        .set_force(true)
         .set_hint("[PATH]+")
-        .set_help("Path need to be search")
         .on(
             move |_: &mut ASet, _: &mut ASer, mut path: ctx::Value<PathBuf>| {
                 if debug {
-                    eprintln!("... prepare searching path: {:?}", path.deref());
+                    eprintln!("INFO: ... prepare searching path: {:?}", path.deref());
                 }
                 if !path.is_file() && !path.is_dir() {
-                    Err(Error::raise_error(format!(
+                    Err(aopt::raise_error!(
                         "{:?} is not a valid path!",
-                        path
-                    )))
+                        path.as_path()
+                    ))
                 } else {
                     Ok(Some(path.take()))
                 }
             },
         )?;
+    let mut jsonopts: JsonOpt = serde_json::from_str(default_json_configuration()).unwrap();
+    let mut config_opts = HashMap::default();
+
     // merge the json configurations
-    for json in jsons {
-        for cfg in json.iter().cloned() {
-            if !config_options.contains(cfg.option()) {
-                config_options.push(cfg.option().clone());
+    load_jsons.into_iter().for_each(|json| {
+        for cfg in json.opts {
+            if !config_opts.contains_key(cfg.id()) {
+                config_opts.insert(cfg.id().clone(), cfg.option().clone());
             }
-            default_jsons.add_cfg(cfg);
-        }
-    }
-    if debug {
-        eprintln!(
-            "... loading cfg: {}",
-            serde_json::to_string_pretty(&default_jsons)?
-        );
-        eprintln!("... loading options: {:?}", config_options);
-    }
-    // add the option to finder
-    default_jsons.add_to(&mut finder)?;
-    // initialize the option value
-    finder.init()?;
-
-    let ret = finder.parse(aopt::Arc::new(Args::from(
-        ret_value.into_args().into_iter(),
-    )));
-    let (sender, mut receiver) = channel(512);
-
-    match ret {
-        Ok(None) => {
-            display_help = true;
-        }
-        Err(e) => {
-            if debug && e.is_failure() {
-                eprintln!("Got a failure: {}\n", e);
-                display_help = true;
-            } else {
-                panic!("{}", e)
-            }
-        }
-        _ => {}
-    }
-    if display_help {
-        return print_help(loader.optset(), finder.optset()).await;
-    }
-    if debug {
-        eprintln!("... Starting search thread ...");
-    }
-    let printer = spawn(async move {
-        while let Some(Some(data)) = receiver.recv().await {
-            println!("{}", data);
+            jsonopts.add_cfg(cfg);
         }
     });
-    find_given_ext_in_directory(config_options, sender, finder, debug, verbose).await?;
-    let _ = printer.await?;
     if debug {
-        eprintln!("... Searching end");
+        note!(
+            "INFO: ... loading cfg: {}",
+            serde_json::to_string_pretty(&jsonopts)?
+        );
+        note!("INFO: ... loading options: {:?}", config_opts);
     }
-    Ok(())
-}
-
-pub struct Context<'a> {
-    debug: bool,
-
-    verbose: bool,
-
-    full: bool,
-
-    hidden: bool,
-
-    reverse: bool,
-
-    ignore_case: bool,
-
-    whos: &'a HashSet<String>,
-
-    exts: &'a HashSet<String>,
-
-    sender: &'a Sender<Option<String>>,
-}
-
-async fn find_given_ext_in_directory(
-    options: Vec<String>,
-    sender: Sender<Option<String>>,
-    parser: Cote<AFwdPolicy>,
-    debug: bool,
-    verbose: bool,
-) -> color_eyre::Result<()> {
-    let mut whos = HashSet::<String>::default();
-    let mut exts = HashSet::<String>::default();
-    let mut paths = parser.find_vals("path")?.clone();
-
-    if debug {
-        eprintln!("... Got search path: {:?}", paths);
+    // add the option to finder
+    jsonopts.add_to(&mut finder)?;
+    if display_help {
+        if debug {
+            note!("INFO: Request display help message: {}", display_help);
+        }
+        return print_help(loader.optset(), finder.optset()).await;
     }
+    // initialize the option value
+    finder.init()?;
+    let mut ret = finder.parse(ret.take_args())?;
 
-    let only = parser.find_val::<String>("--only");
-    let exclude = parser.find_vals::<String>("--Exclude");
-    let ex_exts = parser.find_vals::<String>("--Extension");
-    let ex_whos = parser.find_vals::<String>("--Whole");
-    let whole = parser.find_vals::<String>("--whole");
-    let extension = parser.find_vals::<String>("--extension");
-    let full = *parser.find_val("--full")?;
-
-    let ignore_case = *parser.find_val("--ignore-case")?;
-    let reverse = !*parser.find_val::<bool>("--/reverse")?;
-    let hidden = *parser.find_val("--hidden")?;
-
-    let only_checker = |name1: &str, name2: &str| -> bool {
-        if let Ok(only) = only {
-            only.eq(name1) || only.eq(name2)
-        } else {
-            true
+    if !ret.status() {
+        if debug {
+            note!(
+                "INFO: Display the help message caused by error: {:?}",
+                ret.failure()
+            );
         }
-    };
-    let exclude_checker = move |name1: &str, name2: &str| -> bool {
-        if let Ok(exclude) = exclude {
-            exclude.iter().any(|v| v.eq(name1) || v.eq(name2))
-        } else {
-            false
-        }
-    };
-
-    if only_checker("whole", "w") && !exclude_checker("whole", "w") {
-        if let Ok(whole) = whole {
-            for ext in whole {
-                whos.insert(ext.clone());
-            }
-        }
-    }
-    if only_checker("extension", "e") && !exclude_checker("extension", "e") {
-        if let Ok(extension) = extension {
-            for ext in extension {
-                exts.insert(ext.clone());
-            }
-        }
-    }
-    for opt in options {
-        if only_checker(opt.as_str(), "") && !exclude_checker(opt.as_str(), "") {
-            if let Ok(opt_exts) = parser.find_vals::<String>(opt.as_str()) {
-                for ext in opt_exts {
-                    exts.insert(ext.clone());
-                }
-            }
-        }
-    }
-    if let Ok(ex_exts) = ex_exts {
-        for ext in ex_exts {
-            exts.remove(ext);
-        }
-    }
-    if let Ok(ex_whos) = ex_whos {
-        for ext in ex_whos {
-            whos.remove(ext);
-        }
-    }
-    if ignore_case {
-        exts = exts.into_iter().map(|v| v.to_lowercase()).collect();
-        whos = whos.into_iter().map(|v| v.to_lowercase()).collect();
+        print_help(loader.optset(), finder.optset()).await?;
+        return Err(ret.take_failure())?;
     }
     if debug {
-        eprintln!("match whole filename : {:?}", whos);
-        eprintln!("match file extension : {:?}", exts);
+        note!("INFO: ... Starting search thread ...");
     }
-    if whos.is_empty() && exts.is_empty() {
-        println!("What extension or filename do you want search, try command: fs -? or fs --help",);
-        return Ok(());
-    }
+    let mut paths = finder.take_vals("path").unwrap_or_default();
+
     if !atty::is(atty::Stream::Stdin) {
         let mut buff = String::default();
 
@@ -258,137 +164,321 @@ async fn find_given_ext_in_directory(
         }
     }
     if paths.is_empty() {
-        println!("Which path do you want search, try command: fs -?",);
+        say!("Which path do you want search, try command: fs -?",);
         return Ok(());
     }
+    if debug {
+        note!("INFO: ... Got search path: {:?}", paths);
+    }
+    let (sender, mut receiver) = channel(512);
+    let ctx =
+        Arc::new(Context::new(config_opts, finder, debug, verbose, paths.len(), sender).await?);
 
-    let ctx: Context<'_> = Context {
-        full,
-        debug,
-        verbose,
-        hidden,
-        reverse,
-        ignore_case,
-        whos: &whos,
-        exts: &exts,
-        sender: &sender,
-    };
+    if ctx.is_empty() {
+        say!("What extension or filename do you want search, try command: fs -? or fs --help",);
+        return Ok(());
+    }
+    for path in paths {
+        let inner_ctx = Arc::clone(&ctx);
 
-    while !paths.is_empty() {
-        let mut next_paths = vec![];
-
-        if ctx.debug && ctx.verbose {
-            eprintln!("search file in path: {:?}", paths);
-        }
-        for path in paths {
-            let meta = tokio::fs::metadata(&path).await?;
-
-            if ctx.reverse && meta.is_dir() {
-                if let Err(e) = process_directory(&path, &mut next_paths, &ctx).await {
-                    eprintln!("Error: can not access directory `{:?}`: {:?}", path, e);
-                }
-            } else if meta.is_file() {
-                if let Err(e) = process_file(&path, &mut next_paths, &ctx).await {
-                    eprintln!("Error: can not access file `{:?}`: {:?}", path, e);
-                }
-            } else if ctx.debug {
-                eprintln!("WARN: {:?} is not a valid file", path);
+        tokio::spawn(start_worker!(
+            inner_ctx,
+            path,
+            Context::find_in_directory_first,
+            "ERROR: Can not find file in directory `{:?}`: {:?}"
+        ));
+    }
+    loop {
+        for _ in 0..5 {
+            if let Ok(file) = receiver.try_recv() {
+                say!("{}", file);
             }
         }
-        if ctx.debug && ctx.verbose {
-            eprintln!("next search file in path: {:?}", next_paths);
+        if *ctx.count.lock().await == 0 {
+            break;
+        } else {
+            thread::yield_now();
         }
-        paths = next_paths;
     }
-    sender.send(None).await?;
+    if debug {
+        note!("INFO: ... Searching end");
+    }
     Ok(())
 }
 
-pub async fn process_directory<'a>(
-    path: &PathBuf,
-    next_paths: &mut Vec<PathBuf>,
-    &Context {
-        debug,
-        verbose,
-        full: _,
-        hidden,
-        reverse: _,
-        ignore_case: _,
-        whos: _,
-        exts: _,
-        sender: _,
-    }: &Context<'a>,
-) -> color_eyre::Result<()> {
-    let path = if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
-        if !(file_name.starts_with('.') || file_name.starts_with("$")) || hidden {
+pub struct Context {
+    full: bool,
+
+    debug: bool,
+
+    verb: bool,
+
+    hidden: bool,
+
+    reverse: bool,
+
+    igcase: bool,
+
+    invert: bool,
+
+    whos: HashSet<String>,
+
+    exts: HashSet<String>,
+
+    count: Mutex<usize>,
+
+    sender: Sender<String>,
+}
+
+impl Context {
+    pub async fn new(
+        opts: HashMap<String, String>,
+        parser: AFwdParser<'_>,
+        debug: bool,
+        verb: bool,
+        count: usize,
+        sender: Sender<String>,
+    ) -> color_eyre::Result<Self> {
+        let mut whos = HashSet::<String>::default();
+        let mut exts = HashSet::<String>::default();
+
+        let only = parser.find_val::<String>("--only");
+        let exclude = parser.find_vals::<String>("--Exclude");
+        let ex_exts = parser.find_vals::<String>("--Extension");
+        let ex_whos = parser.find_vals::<String>("--Whole");
+        let whole = parser.find_vals::<String>("--whole");
+        let extension = parser.find_vals::<String>("--extension");
+        let full = *parser.find_val("--full")?;
+
+        let igcase = *parser.find_val("--ignore-case")?;
+        let reverse = !*parser.find_val::<bool>("--/reverse")?;
+        let hidden = *parser.find_val("--hidden")?;
+        let invert = *parser.find_val("--invert")?;
+
+        let only_checker = |name1: &str, name2: &str| -> bool {
+            if let Ok(only) = only {
+                only.eq(name1) || only.eq(name2)
+            } else {
+                true
+            }
+        };
+        let exclude_checker = move |name1: &str, name2: &str| -> bool {
+            if let Ok(exclude) = exclude {
+                exclude.iter().any(|v| v.eq(name1) || v.eq(name2))
+            } else {
+                false
+            }
+        };
+
+        if only_checker("whole", "w") && !exclude_checker("whole", "w") {
+            if let Ok(whole) = whole {
+                for ext in whole {
+                    whos.insert(ext.clone());
+                }
+            }
+        }
+        if only_checker("extension", "e") && !exclude_checker("extension", "e") {
+            if let Ok(extension) = extension {
+                for ext in extension {
+                    exts.insert(ext.clone());
+                }
+            }
+        }
+        for (id, opt) in opts {
+            if only_checker(id.as_str(), "") && !exclude_checker(id.as_str(), "") {
+                if let Ok(opt_exts) = parser.find_vals::<String>(opt.as_str()) {
+                    for ext in opt_exts {
+                        exts.insert(ext.clone());
+                    }
+                }
+            }
+        }
+        if let Ok(ex_exts) = ex_exts {
+            for ext in ex_exts {
+                exts.remove(ext);
+            }
+        }
+        if let Ok(ex_whos) = ex_whos {
+            for ext in ex_whos {
+                whos.remove(ext);
+            }
+        }
+        if igcase {
+            exts = exts.into_iter().map(|v| v.to_lowercase()).collect();
+            whos = whos.into_iter().map(|v| v.to_lowercase()).collect();
+        }
+        if debug {
+            note!("INFO: match whole filename : {:?}", whos);
+            note!("INFO: match file extension : {:?}", exts);
+        }
+        Ok(Self {
+            full,
+            debug,
+            verb,
+            hidden,
+            reverse,
+            igcase,
+            invert,
+            whos,
+            exts,
+            count: Mutex::new(count),
+            sender,
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.whos.is_empty() && self.exts.is_empty()
+    }
+
+    pub async fn inc_worker_count(self: &Arc<Context>) {
+        let mut worker = self.count.lock().await;
+        *worker += 1;
+    }
+
+    pub async fn dec_worker_count(ctx: Arc<Context>) {
+        let mut worker = ctx.count.lock().await;
+        *worker -= 1;
+    }
+
+    async fn find_in_directory_first(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
+        self.find_in_directory_impl(path, true).await
+    }
+
+    async fn find_in_directory_left(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
+        self.find_in_directory_impl(path, false).await
+    }
+
+    async fn find_in_directory_impl(
+        self: Arc<Self>,
+        path: PathBuf,
+        first: bool,
+    ) -> color_eyre::Result<()> {
+        let debug = self.debug;
+        let verbose = self.verb;
+        let reverse = self.reverse;
+
+        if debug && verbose {
+            note!("INFO: search file in path: {:?}", path);
+        }
+        let meta = tokio::fs::metadata(&path).await?;
+
+        if reverse && meta.is_dir() {
+            self.inc_worker_count().await;
+            if first {
+                tokio::spawn(start_worker!(
+                    self,
+                    path,
+                    Self::process_directory_frist,
+                    "ERROR: Can not access directory `{:?}`: {:?}"
+                ));
+            } else {
+                tokio::spawn(start_worker!(
+                    self,
+                    path,
+                    Self::process_directory_left,
+                    "ERROR: Can not access directory `{:?}`: {:?}"
+                ));
+            }
+        } else if meta.is_file() {
+            if let Err(e) = self.process_file(path.clone()).await {
+                note!("ERROR: Can not access file `{:?}`: {:?}", path, e);
+            }
+        } else if debug {
+            note!("WARN: {:?} is not a valid file", path);
+        }
+        Ok(())
+    }
+
+    #[async_recursion::async_recursion]
+    async fn process_directory_frist(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
+        self.process_directory_impl(path, true).await
+    }
+
+    #[async_recursion::async_recursion]
+    async fn process_directory_left(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
+        self.process_directory_impl(path, false).await
+    }
+
+    #[async_recursion::async_recursion]
+    async fn process_directory_impl(
+        self: Arc<Self>,
+        path: PathBuf,
+        first: bool,
+    ) -> color_eyre::Result<()> {
+        let debug = self.debug;
+        let verbose = self.verb;
+        let hidden = self.hidden;
+        let path = if first || !is_file_hidden(&path).await? || hidden {
             Some(path)
         } else {
+            if debug {
+                note!("INFO: ignore directory {:?}", path);
+            }
             None
-        }
-    } else {
-        Some(path)
-    };
-    if let Some(path) = path {
-        if debug {
-            eprintln!("checking directory {:?}", path);
-        }
-        let mut entries = read_dir(path).await?;
+        };
 
-        while let Some(entry) = entries.next_entry().await? {
-            if debug && verbose {
-                eprintln!("add directory to next paths {:?}", path);
+        if let Some(path) = path {
+            if debug {
+                note!("INFO: checking directory {:?}", path);
             }
-            next_paths.push(entry.path())
-        }
-    } else if debug {
-        eprintln!("IGNORE directory {:?}", path);
-    }
-    Ok(())
-}
+            let mut entries = read_dir(path).await?;
 
-pub async fn process_file<'a>(
-    path: &PathBuf,
-    _next_paths: &mut Vec<PathBuf>,
-    &Context {
-        debug,
-        verbose: _,
-        full,
-        hidden,
-        reverse: _,
-        ignore_case,
-        whos,
-        exts,
-        sender,
-    }: &Context<'a>,
-) -> color_eyre::Result<()> {
-    let may_full_path = if full {
-        dunce::canonicalize(&path)?
-    } else {
-        path.clone()
-    };
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                let worker_ctx = Arc::clone(&self);
 
-    if let Some(path_str) = may_full_path.to_str() {
-        if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
-            if !file_name.starts_with('.') && !file_name.starts_with("$") || hidden {
-                if debug {
-                    eprintln!("checking file {}", path_str);
+                if debug && verbose {
+                    note!("INFO: start searching path {:?}", path);
                 }
-                if ignore_case {
-                    if check_file_extension(file_name.to_lowercase().as_ref(), &whos, &exts) {
-                        sender.send(Some(path_str.to_owned())).await?;
+                self.inc_worker_count().await;
+                tokio::spawn(start_worker!(
+                    worker_ctx,
+                    path,
+                    Self::find_in_directory_left,
+                    "ERROR: Can not find file in directory `{:?}`: {:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn process_file(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
+        let debug = self.debug;
+        let hidden = self.hidden;
+        let full = self.full;
+        let igcase = self.igcase;
+        let invert = self.invert;
+
+        let may_full_path = if full {
+            dunce::canonicalize(&path)?
+        } else {
+            path.clone()
+        };
+
+        if !is_file_hidden(&path).await? || hidden {
+            if let Some(path_str) = may_full_path.to_str() {
+                if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
+                    let lower_case = file_name.to_lowercase();
+                    let lower_case = lower_case.as_ref();
+                    let matched = checking_ext(file_name, &self.whos, &self.exts).await
+                        || (igcase && checking_ext(lower_case, &self.whos, &self.exts).await);
+
+                    if debug {
+                        note!("INFO: checking file {}", path_str);
                     }
-                } else if check_file_extension(file_name, &whos, &exts) {
-                    sender.send(Some(path_str.to_owned())).await?;
+                    if matched || invert {
+                        self.sender.send(path_str.to_owned()).await?;
+                    }
                 }
-            } else if debug {
-                eprintln!("IGNORE file {}", path_str);
             }
+        } else if debug {
+            note!("INFO: ignore directory {:?}", path);
         }
+        Ok(())
     }
-    Ok(())
 }
 
-fn check_file_extension(path: &str, whos: &HashSet<String>, exts: &HashSet<String>) -> bool {
+pub async fn checking_ext(path: &str, whos: &HashSet<String>, exts: &HashSet<String>) -> bool {
     match path.rfind('.') {
         None | Some(0) => whos.contains(path),
         Some(pos) => {
@@ -396,6 +486,26 @@ fn check_file_extension(path: &str, whos: &HashSet<String>, exts: &HashSet<Strin
 
             exts.contains(ext) || whos.contains(path)
         }
+    }
+}
+
+#[cfg(windows)]
+pub async fn is_file_hidden(path: &PathBuf) -> color_eyre::Result<bool> {
+    use std::os::windows::fs::MetadataExt;
+
+    let meta = tokio::fs::metadata(path).await?;
+    let attributes = meta.file_attributes();
+
+    Ok((attributes & 0x2) == 0x2)
+}
+
+#[cfg(not(windows))]
+pub async fn is_file_hidden(path: &PathBuf) -> color_eyre::Result<bool> {
+    if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
+        Ok(file_name.starts_with('.'))
+    } else {
+        note!("WARNING: Can not get file name of `{:?}`", path);
+        Ok(false)
     }
 }
 
@@ -527,6 +637,14 @@ fn default_json_configuration() -> &'static str {
                 "alias": [
                     "-f"
                 ]
+            },
+            {
+                "id": "inv",
+                "option": "--invert=b",
+                "help": "Invert the entrie logical to exclude the given extension",
+                "alias": [
+                    "-inv"
+                ]
             }
         ]
     }
@@ -567,13 +685,15 @@ async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
         env!("CARGO_PKG_AUTHORS"),
         env!("CARGO_PKG_VERSION")
     );
-    let head = format!("{}", env!("CARGO_PKG_DESCRIPTION"));
+    let head = env!("CARGO_PKG_DESCRIPTION").to_owned();
     let mut app_help = aopt_help::AppHelp::new(
         "fs",
         &head,
         &foot,
         aopt_help::prelude::Style::default(),
         std::io::stdout(),
+        40,
+        8,
     );
     let global = app_help.global_mut();
     let sets = [set, finder_set];
@@ -590,7 +710,7 @@ async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
                         Cow::from(opt.name().as_str()),
                         Cow::from(opt.hint().as_str()),
                         Cow::from(opt.help().as_str()),
-                        Cow::from(opt.r#type().to_string()),
+                        Cow::default(),
                         !opt.force(),
                         true,
                     ),
@@ -602,7 +722,7 @@ async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
                         Cow::from(opt.name().as_str()),
                         Cow::from(opt.hint().as_str()),
                         Cow::from(opt.help().as_str()),
-                        Cow::from(opt.r#type().to_string()),
+                        Cow::default(),
                         !opt.force(),
                         true,
                     ),
@@ -617,7 +737,7 @@ async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
                         Cow::from(opt.name().as_str()),
                         Cow::from(opt.hint().as_str()),
                         Cow::from(opt.help().as_str()),
-                        Cow::from(opt.r#type().to_string()),
+                        Cow::default(),
                         !opt.force(),
                         false,
                     ),
@@ -634,20 +754,19 @@ mod opt_serde {
     use std::ops::Deref;
     use std::ops::DerefMut;
 
-    use cote::prelude::aopt::prelude::AFwdPolicy;
-    use cote::prelude::MetaConfig;
-    use cote::Cote;
-    use cote::Error;
+    use cote::aopt::prelude::AFwdParser;
+    use cote::CoteError;
+    use cote::*;
     use serde::Deserialize;
     use serde::Serialize;
 
     #[derive(Debug, Default, Clone, Deserialize, Serialize)]
     pub struct JsonOpt {
-        opts: Vec<MetaConfig<String>>,
+        pub opts: Vec<OptionMeta<String>>,
     }
 
     impl Deref for JsonOpt {
-        type Target = Vec<MetaConfig<String>>;
+        type Target = Vec<OptionMeta<String>>;
 
         fn deref(&self) -> &Self::Target {
             &self.opts
@@ -661,14 +780,15 @@ mod opt_serde {
     }
 
     impl JsonOpt {
-        pub fn add_to(self, cote: &mut Cote<AFwdPolicy>) -> Result<(), Error> {
+        pub fn add_to(self, parser: &mut AFwdParser) -> Result<(), CoteError> {
             for meta in self.opts.into_iter() {
-                cote.add_meta(meta)?;
+                let cfg = meta.into_config(parser.optset_mut())?;
+                parser.add_opt_cfg(cfg)?;
             }
             Ok(())
         }
 
-        pub fn add_cfg(&mut self, mut cfg: MetaConfig<String>) -> &mut Self {
+        pub fn add_cfg(&mut self, mut cfg: OptionMeta<String>) -> &mut Self {
             let opt = self.opts.iter_mut().find(|v| v.id() == cfg.id());
 
             match opt {
@@ -684,9 +804,6 @@ mod opt_serde {
                     }
                     if opt.action().is_none() {
                         opt.set_action(cfg.take_action());
-                    }
-                    if opt.assoc().is_none() {
-                        opt.set_assoc(cfg.take_assoc());
                     }
                     if opt.alias().is_none() {
                         opt.set_alias(cfg.take_alias());

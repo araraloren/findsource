@@ -3,7 +3,7 @@
         {
             "id": "whole",
             "option": "-w=s",
-            "help": "Whole name for makefile",
+            "help": "Matching the whole name instead of extension",
             "value": [
                 "Makefile",
                 "makefile"

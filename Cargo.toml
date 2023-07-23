@@ -1,6 +1,6 @@
 [package]
 name = "findsource"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 authors = [ "araraloren <blackcatoverwall@gmail.com>" ]
 description = "Simple configurable tool for searching source files by extensions easily!"
@@ -16,10 +16,11 @@ name = "fs"
 path = "src/main.rs"
 
 [dependencies]
-cote = { version = "0.2", features = [ "sync" ] }
+cote = { version = "0.4", features = [ "sync", "serde" ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0.79" }
 color-eyre = "0.5.11"
 tokio = { version = "1.23", features = ["full"] }
 atty = "0.2.14"
 dunce = "1.0"
+async-recursion = "1.0.4"
