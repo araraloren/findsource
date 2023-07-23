@@ -2,6 +2,7 @@ use cote::aopt::prelude::AFwdParser;
 use cote::aopt::prelude::APreParser;
 use opt_serde::JsonOpt;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -9,6 +10,8 @@ use std::sync::Arc;
 use std::thread;
 use tokio::fs::read_dir;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 
 use aopt::prelude::getopt;
@@ -43,7 +46,7 @@ macro_rules! start_worker {
             if let Err(e) = $func(Arc::clone(&worker_ctx), $path.clone()).await {
                 note!($fmt, $path, e);
             }
-            Context::dec_worker(Arc::clone(&worker_ctx)).await;
+            Context::dec_worker_count(Arc::clone(&worker_ctx)).await;
             Result::<(), color_eyre::Report>::Ok(())
         }
     };
@@ -59,7 +62,7 @@ async fn main() -> color_eyre::Result<()> {
     loader.add_opt("-?;--help=b: Print help message")?;
     loader.add_opt("-v;--verbose=b: Print more debug message")?;
     loader
-        .add_opt("-l--load=s: Load option setting from configuration name or file")?
+        .add_opt("-l;--load=s: Load option setting from configuration name or file")?
         .set_hint("-l,--load CFG|PATH")
         .set_values_t(Vec::<JsonOpt>::new())
         .on(
@@ -80,64 +83,74 @@ async fn main() -> color_eyre::Result<()> {
     } = getopt!(Args::from_env(), &mut loader)?;
     let debug = loader.take_val("--debug")?;
     let verbose = loader.take_val("--verbose")?;
-    let load_jsons = loader.take_vals::<JsonOpt>("--load").unwrap_or_default();
-    let mut display_help = loader.take_val("--help")?;
-    let mut json_opts: JsonOpt = serde_json::from_str(default_json_configuration()).unwrap();
+    let load_jsons: Vec<JsonOpt> = loader.take_vals::<JsonOpt>("--load").unwrap_or_default();
+    let display_help = loader.take_val("--help")?;
     let mut finder = AFwdParser::default();
-    let mut file_opts = vec![];
 
     finder
-        .add_opt("path=p@1..")?
+        .add_opt("path=p@1..: Path need to be search")?
+        .set_force(true)
         .set_hint("[PATH]+")
-        .set_help("Path need to be search")
         .on(
             move |_: &mut ASet, _: &mut ASer, mut path: ctx::Value<PathBuf>| {
                 if debug {
                     eprintln!("INFO: ... prepare searching path: {:?}", path.deref());
                 }
                 if !path.is_file() && !path.is_dir() {
-                    Err(Error::raise_error(format!(
+                    Err(aopt::raise_error!(
                         "{:?} is not a valid path!",
-                        path
-                    )))
+                        path.as_path()
+                    ))
                 } else {
                     Ok(Some(path.take()))
                 }
             },
         )?;
+    let mut jsonopts: JsonOpt = serde_json::from_str(default_json_configuration()).unwrap();
+    let mut config_opts = HashMap::default();
+
     // merge the json configurations
     load_jsons.into_iter().for_each(|json| {
         for cfg in json.opts {
-            if !file_opts.contains(cfg.option()) {
-                file_opts.push(cfg.option().clone());
+            if !config_opts.contains_key(cfg.id()) {
+                config_opts.insert(cfg.id().clone(), cfg.option().clone());
             }
-            json_opts.add_cfg(cfg);
+            jsonopts.add_cfg(cfg);
         }
     });
     if debug {
         note!(
             "INFO: ... loading cfg: {}",
-            serde_json::to_string_pretty(&json_opts)?
+            serde_json::to_string_pretty(&jsonopts)?
         );
-        note!("INFO: ... loading options: {:?}", file_opts);
+        note!("INFO: ... loading options: {:?}", config_opts);
     }
     // add the option to finder
-    json_opts.add_to(&mut finder)?;
-
+    jsonopts.add_to(&mut finder)?;
+    if display_help {
+        if debug {
+            note!("INFO: Request display help message: {}", display_help);
+        }
+        return print_help(loader.optset(), finder.optset()).await;
+    }
     // initialize the option value
     finder.init()?;
-    let ret = finder.parse(ret.take_args());
+    let mut ret = finder.parse(ret.take_args())?;
 
-    display_help = display_help || ret.is_err();
-    let ret = ret?;
-
-    if display_help || !ret.status() {
-        return print_help(loader.optset(), finder.optset()).await;
+    if !ret.status() {
+        if debug {
+            note!(
+                "INFO: Display the help message caused by error: {:?}",
+                ret.failure()
+            );
+        }
+        print_help(loader.optset(), finder.optset()).await?;
+        return Err(ret.take_failure())?;
     }
     if debug {
         note!("INFO: ... Starting search thread ...");
     }
-    let mut paths = finder.take_vals("path")?;
+    let mut paths = finder.take_vals("path").unwrap_or_default();
 
     if !atty::is(atty::Stream::Stdin) {
         let mut buff = String::default();
@@ -157,7 +170,9 @@ async fn main() -> color_eyre::Result<()> {
     if debug {
         note!("INFO: ... Got search path: {:?}", paths);
     }
-    let ctx = Arc::new(Context::new(file_opts, finder, debug, verbose, paths.len()).await?);
+    let (sender, mut receiver) = channel(512);
+    let ctx =
+        Arc::new(Context::new(config_opts, finder, debug, verbose, paths.len(), sender).await?);
 
     if ctx.is_empty() {
         say!("What extension or filename do you want search, try command: fs -? or fs --help",);
@@ -173,8 +188,17 @@ async fn main() -> color_eyre::Result<()> {
             "ERROR: Can not find file in directory `{:?}`: {:?}"
         ));
     }
-    while *ctx.worker.lock().await > 0 {
-        thread::yield_now();
+    loop {
+        for _ in 0..5 {
+            if let Ok(file) = receiver.try_recv() {
+                say!("{}", file);
+            }
+        }
+        if *ctx.count.lock().await == 0 {
+            break;
+        } else {
+            thread::yield_now();
+        }
     }
     if debug {
         note!("INFO: ... Searching end");
@@ -187,7 +211,7 @@ pub struct Context {
 
     debug: bool,
 
-    verbose: bool,
+    verb: bool,
 
     hidden: bool,
 
@@ -195,20 +219,25 @@ pub struct Context {
 
     igcase: bool,
 
+    invert: bool,
+
     whos: HashSet<String>,
 
     exts: HashSet<String>,
 
-    worker: Mutex<usize>,
+    count: Mutex<usize>,
+
+    sender: Sender<String>,
 }
 
 impl Context {
     pub async fn new(
-        options: Vec<String>,
+        opts: HashMap<String, String>,
         parser: AFwdParser<'_>,
         debug: bool,
-        verbose: bool,
-        worker: usize,
+        verb: bool,
+        count: usize,
+        sender: Sender<String>,
     ) -> color_eyre::Result<Self> {
         let mut whos = HashSet::<String>::default();
         let mut exts = HashSet::<String>::default();
@@ -224,6 +253,7 @@ impl Context {
         let igcase = *parser.find_val("--ignore-case")?;
         let reverse = !*parser.find_val::<bool>("--/reverse")?;
         let hidden = *parser.find_val("--hidden")?;
+        let invert = *parser.find_val("--invert")?;
 
         let only_checker = |name1: &str, name2: &str| -> bool {
             if let Ok(only) = only {
@@ -254,8 +284,8 @@ impl Context {
                 }
             }
         }
-        for opt in options {
-            if only_checker(opt.as_str(), "") && !exclude_checker(opt.as_str(), "") {
+        for (id, opt) in opts {
+            if only_checker(id.as_str(), "") && !exclude_checker(id.as_str(), "") {
                 if let Ok(opt_exts) = parser.find_vals::<String>(opt.as_str()) {
                     for ext in opt_exts {
                         exts.insert(ext.clone());
@@ -284,13 +314,15 @@ impl Context {
         Ok(Self {
             full,
             debug,
-            verbose,
+            verb,
             hidden,
             reverse,
             igcase,
+            invert,
             whos,
             exts,
-            worker: Mutex::new(worker),
+            count: Mutex::new(count),
+            sender,
         })
     }
 
@@ -298,13 +330,13 @@ impl Context {
         self.whos.is_empty() && self.exts.is_empty()
     }
 
-    pub async fn inc_worker(self: &Arc<Context>) {
-        let mut worker = self.worker.lock().await;
+    pub async fn inc_worker_count(self: &Arc<Context>) {
+        let mut worker = self.count.lock().await;
         *worker += 1;
     }
 
-    pub async fn dec_worker(ctx: Arc<Context>) {
-        let mut worker = ctx.worker.lock().await;
+    pub async fn dec_worker_count(ctx: Arc<Context>) {
+        let mut worker = ctx.count.lock().await;
         *worker -= 1;
     }
 
@@ -316,9 +348,13 @@ impl Context {
         self.find_in_directory_impl(path, false).await
     }
 
-    async fn find_in_directory_impl(self: Arc<Self>, path: PathBuf, first: bool) -> color_eyre::Result<()> {
+    async fn find_in_directory_impl(
+        self: Arc<Self>,
+        path: PathBuf,
+        first: bool,
+    ) -> color_eyre::Result<()> {
         let debug = self.debug;
-        let verbose = self.verbose;
+        let verbose = self.verb;
         let reverse = self.reverse;
 
         if debug && verbose {
@@ -327,7 +363,7 @@ impl Context {
         let meta = tokio::fs::metadata(&path).await?;
 
         if reverse && meta.is_dir() {
-            self.inc_worker().await;
+            self.inc_worker_count().await;
             if first {
                 tokio::spawn(start_worker!(
                     self,
@@ -335,8 +371,7 @@ impl Context {
                     Self::process_directory_frist,
                     "ERROR: Can not access directory `{:?}`: {:?}"
                 ));
-            }
-            else {
+            } else {
                 tokio::spawn(start_worker!(
                     self,
                     path,
@@ -345,13 +380,6 @@ impl Context {
                 ));
             }
         } else if meta.is_file() {
-            // self.inc_worker().await;
-            // tokio::spawn(start_worker!(
-            //     self,
-            //     path,
-            //     Self::process_file,
-            //     "ERROR: Can not access file `{:?}`: {:?}"
-            // ));
             if let Err(e) = self.process_file(path.clone()).await {
                 note!("ERROR: Can not access file `{:?}`: {:?}", path, e);
             }
@@ -372,9 +400,13 @@ impl Context {
     }
 
     #[async_recursion::async_recursion]
-    async fn process_directory_impl(self: Arc<Self>, path: PathBuf, first: bool) -> color_eyre::Result<()> {
+    async fn process_directory_impl(
+        self: Arc<Self>,
+        path: PathBuf,
+        first: bool,
+    ) -> color_eyre::Result<()> {
         let debug = self.debug;
-        let verbose = self.verbose;
+        let verbose = self.verb;
         let hidden = self.hidden;
         let path = if first || !is_file_hidden(&path).await? || hidden {
             Some(path)
@@ -398,7 +430,7 @@ impl Context {
                 if debug && verbose {
                     note!("INFO: start searching path {:?}", path);
                 }
-                self.inc_worker().await;
+                self.inc_worker_count().await;
                 tokio::spawn(start_worker!(
                     worker_ctx,
                     path,
@@ -415,6 +447,7 @@ impl Context {
         let hidden = self.hidden;
         let full = self.full;
         let igcase = self.igcase;
+        let invert = self.invert;
 
         let may_full_path = if full {
             dunce::canonicalize(&path)?
@@ -425,21 +458,16 @@ impl Context {
         if !is_file_hidden(&path).await? || hidden {
             if let Some(path_str) = may_full_path.to_str() {
                 if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
+                    let lower_case = file_name.to_lowercase();
+                    let lower_case = lower_case.as_ref();
+                    let matched = checking_ext(file_name, &self.whos, &self.exts).await
+                        || (igcase && checking_ext(lower_case, &self.whos, &self.exts).await);
+
                     if debug {
                         note!("INFO: checking file {}", path_str);
                     }
-                    if igcase {
-                        if check_file_extension(
-                            file_name.to_lowercase().as_ref(),
-                            &self.whos,
-                            &self.exts,
-                        )
-                        .await
-                        {
-                            say!("{}", path_str);
-                        }
-                    } else if check_file_extension(file_name, &self.whos, &self.exts).await {
-                        say!("{}", path_str);
+                    if matched || invert {
+                        self.sender.send(path_str.to_owned()).await?;
                     }
                 }
             }
@@ -450,11 +478,7 @@ impl Context {
     }
 }
 
-pub async fn check_file_extension(
-    path: &str,
-    whos: &HashSet<String>,
-    exts: &HashSet<String>,
-) -> bool {
+pub async fn checking_ext(path: &str, whos: &HashSet<String>, exts: &HashSet<String>) -> bool {
     match path.rfind('.') {
         None | Some(0) => whos.contains(path),
         Some(pos) => {
@@ -612,6 +636,14 @@ fn default_json_configuration() -> &'static str {
                 "help": "Display absolute path of matched file",
                 "alias": [
                     "-f"
+                ]
+            },
+            {
+                "id": "inv",
+                "option": "--invert=b",
+                "help": "Invert the entrie logical to exclude the given extension",
+                "alias": [
+                    "-inv"
                 ]
             }
         ]
