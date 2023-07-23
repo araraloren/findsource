@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [[bin]]
-name = "fs"
+name = "fs-nochannel"
 path = "src/main.rs"
 
 [dependencies]

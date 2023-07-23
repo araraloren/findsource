@@ -1,17 +1,34 @@
 use opt_serde::JsonOpt;
+use tokio::io::AsyncWriteExt;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::PathBuf;
 use tokio::fs::read_dir;
-use tokio::spawn;
-use tokio::sync::mpsc::{channel, Sender};
 
 use aopt::prelude::*;
 use aopt::Error;
 use aopt_help::prelude::Block;
 use aopt_help::prelude::Store;
 use cote::prelude::*;
+
+macro_rules! note {
+    ($fmt:literal) => {
+        tokio::io::stderr().write(&format!(concat!($fmt, "\n")).as_bytes()).await?;
+    };
+    ($fmt:literal, $($code:tt)+) => {
+        tokio::io::stderr().write(&format!(concat!($fmt, "\n"), $($code)*).as_bytes()).await?;
+    };
+}
+
+macro_rules! say {
+    ($fmt:literal) => {
+        tokio::io::stdout().write(&format!(concat!($fmt, "\n")).as_bytes()).await?;
+    };
+    ($fmt:literal, $($code:tt)*) => {
+        tokio::io::stdout().write(&format!(concat!($fmt, "\n"), $($code)*).as_bytes()).await?;
+    };
+}
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
@@ -90,11 +107,11 @@ async fn main() -> color_eyre::Result<()> {
         }
     }
     if debug {
-        eprintln!(
+        note!(
             "... loading cfg: {}",
             serde_json::to_string_pretty(&default_jsons)?
         );
-        eprintln!("... loading options: {:?}", config_options);
+        note!("... loading options: {:?}", config_options);
     }
     // add the option to finder
     default_jsons.add_to(&mut finder)?;
@@ -104,7 +121,6 @@ async fn main() -> color_eyre::Result<()> {
     let ret = finder.parse(aopt::Arc::new(Args::from(
         ret_value.into_args().into_iter(),
     )));
-    let (sender, mut receiver) = channel(512);
 
     match ret {
         Ok(None) => {
@@ -112,7 +128,7 @@ async fn main() -> color_eyre::Result<()> {
         }
         Err(e) => {
             if debug && e.is_failure() {
-                eprintln!("Got a failure: {}\n", e);
+                note!("Got a failure: {}\n", e);
                 display_help = true;
             } else {
                 panic!("{}", e)
@@ -124,17 +140,11 @@ async fn main() -> color_eyre::Result<()> {
         return print_help(loader.optset(), finder.optset()).await;
     }
     if debug {
-        eprintln!("... Starting search thread ...");
+        note!("... Starting search thread ...");
     }
-    let printer = spawn(async move {
-        while let Some(Some(data)) = receiver.recv().await {
-            println!("{}", data);
-        }
-    });
-    find_given_ext_in_directory(config_options, sender, finder, debug, verbose).await?;
-    let _ = printer.await?;
+    find_given_ext_in_directory(config_options, finder, debug, verbose).await?;
     if debug {
-        eprintln!("... Searching end");
+        note!("... Searching end");
     }
     Ok(())
 }
@@ -155,13 +165,10 @@ pub struct Context<'a> {
     whos: &'a HashSet<String>,
 
     exts: &'a HashSet<String>,
-
-    sender: &'a Sender<Option<String>>,
 }
 
 async fn find_given_ext_in_directory(
     options: Vec<String>,
-    sender: Sender<Option<String>>,
     parser: Cote<AFwdPolicy>,
     debug: bool,
     verbose: bool,
@@ -171,7 +178,7 @@ async fn find_given_ext_in_directory(
     let mut paths = parser.find_vals("path")?.clone();
 
     if debug {
-        eprintln!("... Got search path: {:?}", paths);
+        note!("... Got search path: {:?}", paths);
     }
 
     let only = parser.find_val::<String>("--only");
@@ -239,11 +246,11 @@ async fn find_given_ext_in_directory(
         whos = whos.into_iter().map(|v| v.to_lowercase()).collect();
     }
     if debug {
-        eprintln!("match whole filename : {:?}", whos);
-        eprintln!("match file extension : {:?}", exts);
+        note!("match whole filename : {:?}", whos);
+        note!("match file extension : {:?}", exts);
     }
     if whos.is_empty() && exts.is_empty() {
-        println!("What extension or filename do you want search, try command: fs -? or fs --help",);
+        say!("What extension or filename do you want search, try command: fs -? or fs --help",);
         return Ok(());
     }
     if !atty::is(atty::Stream::Stdin) {
@@ -258,7 +265,7 @@ async fn find_given_ext_in_directory(
         }
     }
     if paths.is_empty() {
-        println!("Which path do you want search, try command: fs -?",);
+        say!("Which path do you want search, try command: fs -?",);
         return Ok(());
     }
 
@@ -271,36 +278,34 @@ async fn find_given_ext_in_directory(
         ignore_case,
         whos: &whos,
         exts: &exts,
-        sender: &sender,
     };
 
     while !paths.is_empty() {
         let mut next_paths = vec![];
 
         if ctx.debug && ctx.verbose {
-            eprintln!("search file in path: {:?}", paths);
+            note!("search file in path: {:?}", paths);
         }
         for path in paths {
             let meta = tokio::fs::metadata(&path).await?;
 
             if ctx.reverse && meta.is_dir() {
                 if let Err(e) = process_directory(&path, &mut next_paths, &ctx).await {
-                    eprintln!("Error: can not access directory `{:?}`: {:?}", path, e);
+                    note!("Error: can not access directory `{:?}`: {:?}", path, e);
                 }
             } else if meta.is_file() {
                 if let Err(e) = process_file(&path, &mut next_paths, &ctx).await {
-                    eprintln!("Error: can not access file `{:?}`: {:?}", path, e);
+                    note!("Error: can not access file `{:?}`: {:?}", path, e);
                 }
             } else if ctx.debug {
-                eprintln!("WARN: {:?} is not a valid file", path);
+                note!("WARN: {:?} is not a valid file", path);
             }
         }
         if ctx.debug && ctx.verbose {
-            eprintln!("next search file in path: {:?}", next_paths);
+            note!("next search file in path: {:?}", next_paths);
         }
         paths = next_paths;
     }
-    sender.send(None).await?;
     Ok(())
 }
 
@@ -316,7 +321,6 @@ pub async fn process_directory<'a>(
         ignore_case: _,
         whos: _,
         exts: _,
-        sender: _,
     }: &Context<'a>,
 ) -> color_eyre::Result<()> {
     let path = if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
@@ -330,18 +334,18 @@ pub async fn process_directory<'a>(
     };
     if let Some(path) = path {
         if debug {
-            eprintln!("checking directory {:?}", path);
+            note!("checking directory {:?}", path);
         }
         let mut entries = read_dir(path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
             if debug && verbose {
-                eprintln!("add directory to next paths {:?}", path);
+                note!("add directory to next paths {:?}", path);
             }
             next_paths.push(entry.path())
         }
     } else if debug {
-        eprintln!("IGNORE directory {:?}", path);
+        note!("IGNORE directory {:?}", path);
     }
     Ok(())
 }
@@ -358,7 +362,6 @@ pub async fn process_file<'a>(
         ignore_case,
         whos,
         exts,
-        sender,
     }: &Context<'a>,
 ) -> color_eyre::Result<()> {
     let may_full_path = if full {
@@ -371,24 +374,24 @@ pub async fn process_file<'a>(
         if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
             if !file_name.starts_with('.') && !file_name.starts_with("$") || hidden {
                 if debug {
-                    eprintln!("checking file {}", path_str);
+                    note!("checking file {}", path_str);
                 }
                 if ignore_case {
-                    if check_file_extension(file_name.to_lowercase().as_ref(), &whos, &exts) {
-                        sender.send(Some(path_str.to_owned())).await?;
+                    if check_file_extension(file_name.to_lowercase().as_ref(), &whos, &exts).await {
+                        say!("{}", path_str);
                     }
-                } else if check_file_extension(file_name, &whos, &exts) {
-                    sender.send(Some(path_str.to_owned())).await?;
+                } else if check_file_extension(file_name, &whos, &exts).await {
+                    say!("{}", path_str);
                 }
             } else if debug {
-                eprintln!("IGNORE file {}", path_str);
+                note!("IGNORE file {}", path_str);
             }
         }
     }
     Ok(())
 }
 
-fn check_file_extension(path: &str, whos: &HashSet<String>, exts: &HashSet<String>) -> bool {
+pub async fn check_file_extension(path: &str, whos: &HashSet<String>, exts: &HashSet<String>) -> bool {
     match path.rfind('.') {
         None | Some(0) => whos.contains(path),
         Some(pos) => {
