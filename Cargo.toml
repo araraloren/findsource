@@ -1,6 +1,6 @@
 [package]
 name = "findsource"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 authors = [ "araraloren <blackcatoverwall@gmail.com>" ]
 description = "Simple configurable tool for searching source files by extensions easily!"
@@ -24,3 +24,6 @@ tokio = { version = "1.23", features = ["full"] }
 atty = "0.2.14"
 dunce = "1.0"
 async-recursion = "1.0.4"
+
+[profile.release]
+lto = true

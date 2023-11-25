@@ -46,7 +46,7 @@ macro_rules! start_worker {
             if let Err(e) = $func(Arc::clone(&worker_ctx), $path.clone()).await {
                 note!($fmt, $path, e);
             }
-            Context::dec_worker_count(Arc::clone(&worker_ctx)).await;
+            worker_ctx.dec_worker_count().await;
             Result::<(), color_eyre::Report>::Ok(())
         }
     };
@@ -95,7 +95,7 @@ async fn main() -> color_eyre::Result<()> {
             );
         }
         print_help(loader.optset(), finder.optset()).await?;
-        return Err(ret.take_failure())?;
+        Err(ret.take_failure())?
     }
     if debug {
         note!("INFO: ... Starting search thread ...");
@@ -374,8 +374,8 @@ impl Context {
         *worker += 1;
     }
 
-    pub async fn dec_worker_count(ctx: Arc<Context>) {
-        let mut worker = ctx.count.lock().await;
+    pub async fn dec_worker_count(self: &Arc<Context>) {
+        let mut worker = self.count.lock().await;
         *worker -= 1;
     }
 
