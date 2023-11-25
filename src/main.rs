@@ -1,5 +1,6 @@
 use cote::aopt::prelude::AFwdParser;
 use cote::aopt::prelude::APreParser;
+use cote::aopt::shell::CompleteService;
 use opt_serde::JsonOpt;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -14,7 +15,6 @@ use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 
-use aopt::prelude::getopt;
 use aopt::Error;
 use aopt_help::prelude::Block;
 use aopt_help::prelude::Store;
@@ -55,78 +55,28 @@ macro_rules! start_worker {
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
-    let config_directories = get_configuration_directories();
-    let mut loader = APreParser::default();
 
-    loader.add_opt("-d;--debug=b: Print debug message")?;
-    loader.add_opt("-?;--help=b: Print help message")?;
-    loader.add_opt("-v;--verbose=b: Print more debug message")?;
-    loader
-        .add_opt("-l;--load=s: Load option setting from configuration name or file")?
-        .set_hint("-l,--load CFG|PATH")
-        .set_values_t(Vec::<JsonOpt>::new())
-        .on(
-            move |set: &mut ASet, _: &mut ASer, cfg: ctx::Value<String>| {
-                let (path, config) = try_to_load_configuration2(&config_directories, cfg.as_str())?;
+    if let Some((cl, shell)) = aopt::shell::try_get_complete()? {
+        let args = cl.split(' ').collect::<Vec<&str>>();
+        let args = ARef::new(Args::from(args.into_iter()));
+        let (mut loader, mut finder, _, _) = construct_parsers(args.clone(), false).await?;
+        let mut service = CompleteService::default();
 
-                if *set.find_val::<bool>("--debug")? {
-                    eprintln!("INFO: ... loading config {:?}", &path);
-                }
-                Ok(Some(config))
-            },
-        )?;
-
-    // load config name to loader
-    let GetoptRes {
-        mut ret,
-        parser: loader,
-    } = getopt!(Args::from_env(), &mut loader)?;
+        if let Some(options) = loader.take_options() {
+            for opt in options {
+                finder.optset_mut().insert(opt);
+            }
+        }
+        service.parse_with(args, finder.optset_mut())?;
+        service.write_complete_to(finder.optset(), &mut std::io::stdout(), shell)?;
+        return Ok(());
+    }
+    let (mut loader, mut finder, args, config_opts) =
+        construct_parsers(ARef::new(Args::from_env()), true).await?;
+    let display_help = loader.take_val("--help")?;
     let debug = loader.take_val("--debug")?;
     let verbose = loader.take_val("--verbose")?;
-    let load_jsons: Vec<JsonOpt> = loader.take_vals::<JsonOpt>("--load").unwrap_or_default();
-    let display_help = loader.take_val("--help")?;
-    let mut finder = AFwdParser::default();
 
-    finder
-        .add_opt("path=p@1..: Path need to be search")?
-        .set_force(true)
-        .set_hint("[PATH]+")
-        .on(
-            move |_: &mut ASet, _: &mut ASer, mut path: ctx::Value<PathBuf>| {
-                if debug {
-                    eprintln!("INFO: ... prepare searching path: {:?}", path.deref());
-                }
-                if !path.is_file() && !path.is_dir() {
-                    Err(aopt::raise_error!(
-                        "{:?} is not a valid path!",
-                        path.as_path()
-                    ))
-                } else {
-                    Ok(Some(path.take()))
-                }
-            },
-        )?;
-    let mut jsonopts: JsonOpt = serde_json::from_str(default_json_configuration()).unwrap();
-    let mut config_opts = HashMap::default();
-
-    // merge the json configurations
-    load_jsons.into_iter().for_each(|json| {
-        for cfg in json.opts {
-            if !config_opts.contains_key(cfg.id()) {
-                config_opts.insert(cfg.id().clone(), cfg.option().clone());
-            }
-            jsonopts.add_cfg(cfg);
-        }
-    });
-    if debug {
-        note!(
-            "INFO: ... loading cfg: {}",
-            serde_json::to_string_pretty(&jsonopts)?
-        );
-        note!("INFO: ... loading options: {:?}", config_opts);
-    }
-    // add the option to finder
-    jsonopts.add_to(&mut finder)?;
     if display_help {
         if debug {
             note!("INFO: Request display help message: {}", display_help);
@@ -135,7 +85,7 @@ async fn main() -> color_eyre::Result<()> {
     }
     // initialize the option value
     finder.init()?;
-    let mut ret = finder.parse(ret.take_args())?;
+    let mut ret = finder.parse(args)?;
 
     if !ret.status() {
         if debug {
@@ -204,6 +154,95 @@ async fn main() -> color_eyre::Result<()> {
         note!("INFO: ... Searching end");
     }
     Ok(())
+}
+
+pub async fn construct_parsers<'a>(
+    args: ARef<Args>,
+    press_output: bool,
+) -> color_eyre::Result<(
+    APreParser<'a>,
+    AFwdParser<'a>,
+    ARef<Args>,
+    HashMap<String, String>,
+)> {
+    let config_directories = get_configuration_directories();
+    let mut loader = APreParser::default();
+
+    loader.add_opt("-d;--debug=b: Print debug message")?;
+    loader.add_opt("-?;--help=b: Print help message")?;
+    loader.add_opt("-v;--verbose=b: Print more debug message")?;
+    loader
+        .add_opt("-l;--load=s: Load option setting from configuration name or file")?
+        .set_hint("-l,--load CFG|PATH")
+        .set_values_t(Vec::<JsonOpt>::new())
+        .on(
+            move |set: &mut ASet, _: &mut ASer, cfg: ctx::Value<String>| {
+                let ret = try_to_load_configuration2(&config_directories, cfg.as_str());
+
+                if press_output {
+                    let (path, config) = ret?;
+
+                    if *set.find_val::<bool>("--debug")? {
+                        eprintln!("INFO: ... loading config {:?} --> {:?}", &path, &config);
+                    }
+                    Ok(Some(config))
+                } else {
+                    Ok(ret.map(|(_, config)| config).ok())
+                }
+            },
+        )?;
+
+    // load config name to loader
+    let mut ret = loader.parse(args)?;
+    let mut debug = *loader.find_val("--debug")?;
+    let load_jsons: Vec<JsonOpt> = loader.take_vals::<JsonOpt>("--load").unwrap_or_default();
+    let mut finder = AFwdParser::default();
+
+    if press_output {
+        debug = false;
+    }
+    finder
+        .add_opt("path=p@1..: Path need to be search")?
+        .set_force(true)
+        .set_hint("[PATH]+")
+        .on(
+            move |_: &mut ASet, _: &mut ASer, mut path: ctx::Value<PathBuf>| {
+                if debug {
+                    eprintln!("INFO: ... prepare searching path: {:?}", path.deref());
+                }
+                if !path.is_file() && !path.is_dir() {
+                    Err(aopt::raise_error!(
+                        "{:?} is not a valid path!",
+                        path.as_path()
+                    ))
+                } else {
+                    Ok(Some(path.take()))
+                }
+            },
+        )?;
+    let mut jsonopts: JsonOpt = serde_json::from_str(default_json_configuration()).unwrap();
+    let mut config_opts = HashMap::<String, String>::default();
+
+    // merge the json configurations
+    load_jsons.into_iter().for_each(|json| {
+        for cfg in json.opts {
+            if !config_opts.contains_key(cfg.id()) {
+                config_opts.insert(cfg.id().clone(), cfg.option().clone());
+            }
+            jsonopts.add_cfg(cfg);
+        }
+    });
+    if debug {
+        note!(
+            "INFO: ... loading cfg: {}",
+            serde_json::to_string_pretty(&jsonopts)?
+        );
+        note!("INFO: ... loading options: {:?}", config_opts);
+    }
+    // add the option to finder
+    jsonopts.add_to(&mut finder)?;
+
+    Ok((loader, finder, ret.take_args(), config_opts))
 }
 
 pub struct Context {
