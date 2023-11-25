@@ -23,7 +23,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUSTTARGET: ${{ matrix.target }}
-          EXTRA_FILES: "README.md LICENSE config/c.json config/cpp.json config/cfg.json config/make.json config/unity.json"
+          EXTRA_FILES: "README.md LICENSE config/c.json config/cpp.json config/cfg.json config/make.json config/unity.json shell/fs.fish shell/fs.sh shell/fs.zsh"
           ARCHIVE_TYPES: ${{ matrix.archive }}
           PRE_BUILD: "pre_build.sh"
           POST_BUILD: "test/post_build.sh"
