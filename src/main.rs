@@ -78,7 +78,7 @@ struct Cli<'a> {
 }
 
 impl<'a> Cli<'a> {
-    pub async fn new(args: ARef<Args>, allow_debug: bool) -> Result<Self> {
+    pub async fn new(args: ARef<Args>, allow_debug: bool) -> Result<Cli<'a>> {
         let config_dir = get_configuration_directories();
         let mut loader = APreParser::default();
 
