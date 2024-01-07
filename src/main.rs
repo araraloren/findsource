@@ -229,7 +229,7 @@ impl<'a> Cli<'a> {
             note!("INFO: ... Got search path: {:?}", paths);
         }
         let (tx, rx) = channel(512);
-        let finder = Finder::new(pre_load, finder, debug, verbose, paths.len(), tx).await?;
+        let finder = Finder::new(pre_load, finder, debug, verbose, tx).await?;
 
         Ok(Some((paths, finder, rx)))
     }

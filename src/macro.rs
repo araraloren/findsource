@@ -27,7 +27,6 @@ macro_rules! start_worker {
             if let Err(e) = $func(Arc::clone(&finder), $path.clone()).await {
                 note!($fmt, $path, e);
             }
-            finder.dec_worker_count().await;
             Result::<(), color_eyre::Report>::Ok(())
         }
     };

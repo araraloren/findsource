@@ -6,7 +6,6 @@ use std::sync::Arc;
 use tokio::fs::read_dir;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::Sender;
-use tokio::sync::Mutex;
 
 use cote::*;
 
@@ -32,8 +31,6 @@ pub struct Finder {
 
     exts: HashSet<String>,
 
-    count: Mutex<usize>,
-
     sender: Sender<String>,
 }
 
@@ -43,7 +40,6 @@ impl Finder {
         parser: AFwdParser<'_>,
         debug: bool,
         verb: bool,
-        count: usize,
         sender: Sender<String>,
     ) -> color_eyre::Result<Self> {
         let mut whos = HashSet::<String>::default();
@@ -128,23 +124,12 @@ impl Finder {
             invert,
             whos,
             exts,
-            count: Mutex::new(count),
             sender,
         })
     }
 
     pub fn is_empty(&self) -> bool {
         self.whos.is_empty() && self.exts.is_empty()
-    }
-
-    pub async fn inc_worker_count(self: &Arc<Finder>) {
-        let mut worker = self.count.lock().await;
-        *worker += 1;
-    }
-
-    pub async fn dec_worker_count(self: &Arc<Finder>) {
-        let mut worker = self.count.lock().await;
-        *worker -= 1;
     }
 
     pub async fn find_in_directory_first(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
@@ -170,7 +155,6 @@ impl Finder {
         let meta = tokio::fs::metadata(&path).await?;
 
         if reverse && meta.is_dir() {
-            self.inc_worker_count().await;
             if first {
                 tokio::spawn(start_worker!(
                     self,
@@ -237,7 +221,6 @@ impl Finder {
                 if debug && verbose {
                     note!("INFO: start searching path {:?}", path);
                 }
-                self.inc_worker_count().await;
                 tokio::spawn(start_worker!(
                     worker_ctx,
                     path,
