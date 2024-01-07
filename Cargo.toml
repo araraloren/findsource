@@ -1,6 +1,6 @@
 [package]
 name = "findsource"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 authors = [ "araraloren <blackcatoverwall@gmail.com>" ]
 description = "Simple configurable tool for searching source files by extensions easily!"

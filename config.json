@@ -1,0 +1,98 @@
+{
+    "opts": [
+        {
+            "id": "whole",
+            "option": "-w=s",
+            "help": "Extension category: match whole filename",
+            "alias": [
+                "--whole"
+            ],
+            "value": []
+        },
+        {
+            "id": "Whole",
+            "option": "-W=s",
+            "help": "Exclude given whole filename",
+            "alias": [
+                "--Whole"
+            ],
+            "value": []
+        },
+        {
+            "id": "ext",
+            "option": "-e=s",
+            "help": "Extension category: match file extension",
+            "alias": [
+                "--extension"
+            ],
+            "value": []
+        },
+        {
+            "id": "Ext",
+            "option": "-E=s",
+            "help": "Exclude given file extension",
+            "alias": [
+                "--Extension"
+            ],
+            "value": []
+        },
+        {
+            "id": "X",
+            "option": "-X=s",
+            "help": "Exclude given file category",
+            "alias": [
+                "--Exclude"
+            ],
+            "value": []
+        },
+        {
+            "id": "ignore",
+            "option": "--ignore-case=b",
+            "help": "Enable ignore case mode",
+            "alias": [
+                "-i"
+            ]
+        },
+        {
+            "id": "only",
+            "option": "--only=s",
+            "help": "Only search given file category",
+            "alias": [
+                "-o"
+            ],
+            "value": []
+        },
+        {
+            "id": "reverse",
+            "option": "--/reverse=b",
+            "help": "Disable reverse mode",
+            "alias": [
+                "-/r"
+            ]
+        },
+        {
+            "id": "hidden",
+            "option": "--hidden=b",
+            "help": "Search hidden file",
+            "alias": [
+                "-a"
+            ]
+        },
+        {
+            "id": "full",
+            "option": "--full=b",
+            "help": "Display absolute path of matched file",
+            "alias": [
+                "-f"
+            ]
+        },
+        {
+            "id": "inv",
+            "option": "--invert=b",
+            "help": "Invert the entrie logical to exclude the given extension",
+            "alias": [
+                "-inv"
+            ]
+        }
+    ]
+}
