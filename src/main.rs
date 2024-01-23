@@ -10,13 +10,12 @@ use cote::aopt::shell::CompleteService;
 use cote::aopt::shell::Shell;
 use cote::aopt::HashMap;
 use cote::*;
+
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc::channel;
-use tokio::sync::mpsc::Receiver;
+use std::sync::mpsc::channel;
+use std::thread::spawn;
 
 use config::default_json_configuration;
 use config::get_configuration_directories;
@@ -24,44 +23,35 @@ use config::try_to_load_configuration2;
 use finder::Finder;
 use json::JsonOpt;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     color_eyre::install()?;
 
     if let Some((cl, shell)) = aopt::shell::try_get_complete()? {
         let args = cl.split(' ').collect::<Vec<&str>>();
         let args = ARef::new(Args::from(args.into_iter()));
-        let cli = Cli::new(args.clone(), false).await?;
+        let cli = Cli::new(args.clone(), false)?;
 
-        cli.try_auto_complete(shell).await?;
+        cli.try_auto_complete(shell)?;
     } else {
-        let cli = Cli::new(ARef::new(Args::from_env()), true).await?;
+        let cli = Cli::new(ARef::new(Args::from_env()), true)?;
 
-        if let Some((paths, finder, mut rx)) = cli.into_finder().await? {
+        if let Some((paths, finder)) = cli.into_finder()? {
             if finder.is_empty() {
                 say!("What extension or filename do you want search, try command: fs -? or fs --help",);
                 return Ok(());
             }
             let debug = finder.debug;
-            let finder = Arc::new(finder);
+            let (tx, rx) = channel();
+            let finder_clone = finder.clone();
+            let search = spawn(move || finder_clone.search_worker(rx));
+            let list = spawn(move || finder.list_worker(paths, tx));
 
-            for path in paths {
-                let inner_finder = Arc::clone(&finder);
-
-                tokio::spawn(start_worker!(
-                    inner_finder,
-                    path,
-                    Finder::find_in_directory_first,
-                    "ERROR: Can not find file in directory `{:?}`: {:?}"
-                ));
-            }
-            drop(finder);
-            while let Some(file) = rx.recv().await {
-                say!("{}", file);
-            }
             if debug {
                 note!("INFO: ... Searching end");
             }
+
+            let _ = list.join().expect("Join finder thread failed!");
+            let _ = search.join().expect("Join finder thread failed!");
         }
     }
     Ok(())
@@ -78,7 +68,7 @@ struct Cli<'a> {
 }
 
 impl<'a> Cli<'a> {
-    pub async fn new(args: ARef<Args>, allow_debug: bool) -> Result<Cli<'a>> {
+    pub fn new(args: ARef<Args>, allow_debug: bool) -> Result<Cli<'a>> {
         let config_dir = get_configuration_directories();
         let mut loader = APreParser::default();
 
@@ -164,7 +154,7 @@ impl<'a> Cli<'a> {
         })
     }
 
-    pub async fn try_auto_complete(mut self, shell: Shell) -> Result<()> {
+    pub fn try_auto_complete(mut self, shell: Shell) -> Result<()> {
         let mut service = CompleteService::default();
 
         if let Some(options) = self.loader.take_options() {
@@ -177,7 +167,7 @@ impl<'a> Cli<'a> {
         Ok(())
     }
 
-    pub async fn into_finder(self) -> Result<Option<(Vec<PathBuf>, Finder, Receiver<String>)>> {
+    pub fn into_finder(self) -> Result<Option<(Vec<PathBuf>, Finder)>> {
         let mut loader = self.loader;
         let mut finder = self.finder;
         let pre_load = self.pre_load;
@@ -189,7 +179,7 @@ impl<'a> Cli<'a> {
             if debug {
                 note!("INFO: Request display help message: {}", help);
             }
-            print_help(loader.optset(), finder.optset()).await?;
+            print_help(loader.optset(), finder.optset())?;
             return Ok(None);
         }
         // initialize the option value
@@ -202,7 +192,7 @@ impl<'a> Cli<'a> {
                     ret.failure()
                 );
             }
-            print_help(loader.optset(), finder.optset()).await?;
+            print_help(loader.optset(), finder.optset())?;
             Err(ret.take_failure())?
         }
         if debug {
@@ -228,14 +218,13 @@ impl<'a> Cli<'a> {
         if debug {
             note!("INFO: ... Got search path: {:?}", paths);
         }
-        let (tx, rx) = channel(512);
-        let finder = Finder::new(pre_load, finder, debug, verbose, tx).await?;
+        let finder = Finder::new(pre_load, finder, debug, verbose)?;
 
-        Ok(Some((paths, finder, rx)))
+        Ok(Some((paths, finder)))
     }
 }
 
-async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
+fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
     use aopt_help::block::Block;
     use aopt_help::store::Store;
 

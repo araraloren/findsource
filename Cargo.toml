@@ -2,7 +2,7 @@
 name = "findsource"
 version = "0.2.4"
 edition = "2021"
-authors = [ "araraloren <blackcatoverwall@gmail.com>" ]
+authors = ["araraloren <blackcatoverwall@gmail.com>"]
 description = "Simple configurable tool for searching source files by extensions easily!"
 repository = "https://github.com/araraloren/findsource"
 license = "MPL-2.0"
@@ -16,14 +16,14 @@ name = "fs"
 path = "src/main.rs"
 
 [dependencies]
-cote = { version = "0.4.6", features = [ "sync", "serde", "shell" ] }
+cote = { version = "0.4.6", features = ["sync", "serde", "shell"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0.79" }
 color-eyre = "0.5.11"
-tokio = { version = "1.23", features = ["full"] }
 atty = "0.2.14"
 dunce = "1.0"
-async-recursion = "1.0.4"
+
 
 [profile.release]
 lto = true
+codegen-units = 1

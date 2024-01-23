@@ -1,17 +1,14 @@
 use cote::aopt::prelude::AFwdParser;
 use cote::aopt::HashMap;
 use std::collections::HashSet;
+use std::fs::read_dir;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::fs::read_dir;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 
+use crate::{note, say};
 use cote::*;
 
-use crate::note;
-use crate::start_worker;
-
+#[derive(Debug, Clone)]
 pub struct Finder {
     full: bool,
 
@@ -30,17 +27,14 @@ pub struct Finder {
     whos: HashSet<String>,
 
     exts: HashSet<String>,
-
-    sender: Sender<String>,
 }
 
 impl Finder {
-    pub async fn new(
+    pub fn new(
         opts: HashMap<String, String>,
         parser: AFwdParser<'_>,
         debug: bool,
         verb: bool,
-        sender: Sender<String>,
     ) -> color_eyre::Result<Self> {
         let mut whos = HashSet::<String>::default();
         let mut exts = HashSet::<String>::default();
@@ -124,7 +118,6 @@ impl Finder {
             invert,
             whos,
             exts,
-            sender,
         })
     }
 
@@ -132,143 +125,83 @@ impl Finder {
         self.whos.is_empty() && self.exts.is_empty()
     }
 
-    pub async fn find_in_directory_first(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
-        self.find_in_directory_impl(path, true).await
-    }
-
-    pub async fn find_in_directory_left(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
-        self.find_in_directory_impl(path, false).await
-    }
-
-    pub async fn find_in_directory_impl(
-        self: Arc<Self>,
-        path: PathBuf,
-        first: bool,
-    ) -> color_eyre::Result<()> {
-        let debug = self.debug;
-        let verbose = self.verb;
-        let reverse = self.reverse;
-
-        if debug && verbose {
-            note!("INFO: search file in path: {:?}", path);
-        }
-        let meta = tokio::fs::metadata(&path).await?;
-
-        if reverse && meta.is_dir() {
-            if first {
-                tokio::spawn(start_worker!(
-                    self,
-                    path,
-                    Self::process_directory_frist,
-                    "ERROR: Can not access directory `{:?}`: {:?}"
-                ));
-            } else {
-                tokio::spawn(start_worker!(
-                    self,
-                    path,
-                    Self::process_directory_left,
-                    "ERROR: Can not access directory `{:?}`: {:?}"
-                ));
-            }
-        } else if meta.is_file() {
-            if let Err(e) = self.process_file(path.clone()).await {
-                note!("ERROR: Can not access file `{:?}`: {:?}", path, e);
-            }
-        } else if debug {
-            note!("WARN: {:?} is not a valid file", path);
-        }
-        Ok(())
-    }
-
-    #[async_recursion::async_recursion]
-    pub async fn process_directory_frist(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
-        self.process_directory_impl(path, true).await
-    }
-
-    #[async_recursion::async_recursion]
-    pub async fn process_directory_left(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
-        self.process_directory_impl(path, false).await
-    }
-
-    #[async_recursion::async_recursion]
-    pub async fn process_directory_impl(
-        self: Arc<Self>,
-        path: PathBuf,
-        first: bool,
-    ) -> color_eyre::Result<()> {
-        let debug = self.debug;
-        let verbose = self.verb;
-        let hidden = self.hidden;
-        let path = if first || !is_file_hidden(&path).await? || hidden {
-            Some(path)
-        } else {
-            if debug {
-                note!("INFO: ignore directory {:?}", path);
-            }
-            None
-        };
-
-        if let Some(path) = path {
-            if debug {
-                note!("INFO: checking directory {:?}", path);
-            }
-            let mut entries = read_dir(path).await?;
-
-            while let Some(entry) = entries.next_entry().await? {
-                let path = entry.path();
-                let worker_ctx = Arc::clone(&self);
-
-                if debug && verbose {
-                    note!("INFO: start searching path {:?}", path);
-                }
-                tokio::spawn(start_worker!(
-                    worker_ctx,
-                    path,
-                    Self::find_in_directory_left,
-                    "ERROR: Can not find file in directory `{:?}`: {:?}"
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn process_file(self: Arc<Self>, path: PathBuf) -> color_eyre::Result<()> {
+    pub fn search_worker(&self, rx: Receiver<PathBuf>) -> color_eyre::Result<()> {
         let debug = self.debug;
         let hidden = self.hidden;
         let full = self.full;
         let igcase = self.igcase;
         let invert = self.invert;
 
-        let may_full_path = if full {
-            dunce::canonicalize(&path)?
-        } else {
-            path.clone()
-        };
+        while let Ok(path) = rx.recv() {
+            let may_full_path = if full {
+                dunce::canonicalize(&path)?
+            } else {
+                path.clone()
+            };
 
-        if !is_file_hidden(&path).await? || hidden {
-            if let Some(path_str) = may_full_path.to_str() {
-                if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
-                    let lower_case = file_name.to_lowercase();
-                    let lower_case = lower_case.as_ref();
-                    let matched = checking_ext(file_name, &self.whos, &self.exts).await
-                        || (igcase && checking_ext(lower_case, &self.whos, &self.exts).await);
+            if !is_file_hidden(&path)? || hidden {
+                if let Some(path_str) = may_full_path.to_str() {
+                    if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
+                        let lower_case = file_name.to_lowercase();
+                        let lower_case = lower_case.as_ref();
+                        let matched = checking_ext(file_name, &self.whos, &self.exts)
+                            || (igcase && checking_ext(lower_case, &self.whos, &self.exts));
 
-                    if debug {
-                        note!("INFO: checking file {}", path_str);
+                        if debug {
+                            note!("INFO: checking file {}", path_str);
+                        }
+                        if matched || invert {
+                            say!("{}", path_str);
+                        }
                     }
-                    if matched || invert {
-                        self.sender.send(path_str.to_owned()).await?;
+                }
+            } else if debug {
+                note!("INFO: ignore directory {:?}", path);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn list_worker(&self, paths: Vec<PathBuf>, tx: Sender<PathBuf>) -> color_eyre::Result<()> {
+        let debug = self.debug;
+        let hidden = self.hidden;
+        let verbose = self.verb;
+        let reverse = self.reverse;
+        let mut stack = paths;
+
+        while !stack.is_empty() {
+            let mut next = vec![];
+
+            for path in stack.iter() {
+                if debug && verbose {
+                    note!("INFO: search file in path: {:?}", path);
+                }
+                for entry in read_dir(path)? {
+                    let entry = entry?;
+                    let path = entry.path();
+
+                    if path.is_dir() && reverse {
+                        if !is_file_hidden(&path)? || hidden {
+                            if debug {
+                                note!("INFO: checking directory {:?}", path);
+                            }
+                            next.push(path);
+                        } else {
+                            note!("INFO: ignore directory {:?}", path);
+                        }
+                    } else {
+                        tx.send(path)?;
                     }
                 }
             }
-        } else if debug {
-            note!("INFO: ignore directory {:?}", path);
+
+            stack = next;
         }
         Ok(())
     }
 }
 
-pub async fn checking_ext(path: &str, whos: &HashSet<String>, exts: &HashSet<String>) -> bool {
+pub fn checking_ext(path: &str, whos: &HashSet<String>, exts: &HashSet<String>) -> bool {
     match path.rfind('.') {
         None | Some(0) => whos.contains(path),
         Some(pos) => {
@@ -280,17 +213,17 @@ pub async fn checking_ext(path: &str, whos: &HashSet<String>, exts: &HashSet<Str
 }
 
 #[cfg(windows)]
-pub async fn is_file_hidden(path: &PathBuf) -> color_eyre::Result<bool> {
+pub fn is_file_hidden(path: &PathBuf) -> color_eyre::Result<bool> {
     use std::os::windows::fs::MetadataExt;
 
-    let meta = tokio::fs::metadata(path).await?;
+    let meta = tokio::fs::metadata(path)?;
     let attributes = meta.file_attributes();
 
     Ok((attributes & 0x2) == 0x2)
 }
 
 #[cfg(not(windows))]
-pub async fn is_file_hidden(path: &PathBuf) -> color_eyre::Result<bool> {
+pub fn is_file_hidden(path: &PathBuf) -> color_eyre::Result<bool> {
     if let Some(Some(file_name)) = path.file_name().map(|v| v.to_str()) {
         Ok(file_name.starts_with('.'))
     } else {
