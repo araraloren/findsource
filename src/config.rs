@@ -1,7 +1,6 @@
 use crate::json::JsonOpt;
 
-use aopt::Error;
-use cote::*;
+use cote::Error;
 use std::path::PathBuf;
 
 const CONFIG: &str = include_str!("../config.json");

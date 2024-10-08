@@ -4,14 +4,15 @@ mod json;
 mod r#macro;
 
 use color_eyre::Result;
+use cote::aopt;
 use cote::aopt::prelude::AFwdParser;
 use cote::aopt::prelude::APreParser;
 use cote::aopt::shell::CompleteService;
 use cote::aopt::shell::Shell;
 use cote::aopt::HashMap;
-use cote::*;
+use cote::aopt_help;
+use cote::prelude::*;
 use std::borrow::Cow;
-use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -30,12 +31,12 @@ async fn main() -> Result<()> {
 
     if let Some((cl, shell)) = aopt::shell::try_get_complete()? {
         let args = cl.split(' ').collect::<Vec<&str>>();
-        let args = ARef::new(Args::from(args.into_iter()));
-        let cli = Cli::new(args.clone(), false).await?;
+        let args = Args::from(args.into_iter());
+        let cli = Cli::new(args, false).await?;
 
         cli.try_auto_complete(shell).await?;
     } else {
-        let cli = Cli::new(ARef::new(Args::from_env()), true).await?;
+        let cli = Cli::new(Args::from_env(), true).await?;
 
         if let Some((paths, finder, mut rx)) = cli.into_finder().await? {
             if finder.is_empty() {
@@ -72,13 +73,13 @@ struct Cli<'a> {
 
     finder: AFwdParser<'a>,
 
-    args: ARef<Args>,
+    args: Args,
 
     pre_load: HashMap<String, String>,
 }
 
 impl<'a> Cli<'a> {
-    pub async fn new(args: ARef<Args>, allow_debug: bool) -> Result<Cli<'a>> {
+    pub async fn new(args: Args, allow_debug: bool) -> Result<Cli<'a>> {
         let config_dir = get_configuration_directories();
         let mut loader = APreParser::default();
 
@@ -89,22 +90,21 @@ impl<'a> Cli<'a> {
             .add_opt("-l;--load=s: Load option setting from configuration name or file")?
             .set_hint("-l,--load CFG|PATH")
             .set_values_t(Vec::<JsonOpt>::new())
-            .on(
-                move |set: &mut ASet, _: &mut ASer, cfg: ctx::Value<String>| {
-                    let ret = try_to_load_configuration2(&config_dir, cfg.as_str());
+            .on(move |set: &mut ASet, _: &mut ASer, ctx: &Ctx| {
+                let cfg = ctx.value::<String>()?;
+                let ret = try_to_load_configuration2(&config_dir, &cfg);
 
-                    if allow_debug {
-                        let (path, config) = ret?;
+                if allow_debug {
+                    let (path, config) = ret?;
 
-                        if *set.find_val::<bool>("--debug")? {
-                            eprintln!("INFO: ... loading config {:?} --> {:?}", &path, &config);
-                        }
-                        Ok(Some(config))
-                    } else {
-                        Ok(ret.map(|(_, config)| config).ok())
+                    if *set.find_val::<bool>("--debug")? {
+                        eprintln!("INFO: ... loading config {:?} --> {:?}", &path, &config);
                     }
-                },
-            )?;
+                    Ok(Some(config))
+                } else {
+                    Ok(ret.map(|(_, config)| config).ok())
+                }
+            })?;
 
         // load config name to loader
         let mut ret = loader.parse(args)?;
@@ -119,21 +119,21 @@ impl<'a> Cli<'a> {
             .add_opt("path=p@1..: Path need to be search")?
             .set_force(true)
             .set_hint("[PATH]+")
-            .on(
-                move |_: &mut ASet, _: &mut ASer, mut path: ctx::Value<PathBuf>| {
-                    if debug {
-                        eprintln!("INFO: ... prepare searching path: {:?}", path.deref());
-                    }
-                    if !path.is_file() && !path.is_dir() {
-                        Err(aopt::raise_error!(
-                            "{:?} is not a valid path!",
-                            path.as_path()
-                        ))
-                    } else {
-                        Ok(Some(path.take()))
-                    }
-                },
-            )?;
+            .on(move |_: &mut ASet, _: &mut ASer, ctx: &Ctx| {
+                let path = ctx.value::<PathBuf>()?;
+
+                if debug {
+                    eprintln!("INFO: ... prepare searching path: {:?}", path);
+                }
+                if !path.is_file() && !path.is_dir() {
+                    Err(aopt::raise_error!(
+                        "{:?} is not a valid path!",
+                        path.as_path()
+                    ))
+                } else {
+                    Ok(Some(path))
+                }
+            })?;
         let mut jsonopts: JsonOpt = serde_json::from_str(default_json_configuration()).unwrap();
         let mut pre_loads = HashMap::<String, String>::default();
 
@@ -159,7 +159,7 @@ impl<'a> Cli<'a> {
         Ok(Self {
             loader,
             finder,
-            args: ret.take_args(),
+            args: Args::from(ret.take_args()),
             pre_load: pre_loads,
         })
     }
@@ -203,7 +203,7 @@ impl<'a> Cli<'a> {
                 );
             }
             print_help(loader.optset(), finder.optset()).await?;
-            Err(ret.take_failure())?
+            return Err(ret.take_failure().unwrap())?;
         }
         if debug {
             note!("INFO: ... Starting search thread ...");
@@ -266,9 +266,9 @@ async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
                 global.add_store(
                     "args",
                     Store::new(
-                        Cow::from(opt.name().as_str()),
-                        Cow::from(opt.hint().as_str()),
-                        Cow::from(opt.help().as_str()),
+                        Cow::from(opt.name()),
+                        Cow::from(opt.hint()),
+                        Cow::from(opt.help()),
                         Cow::default(),
                         !opt.force(),
                         true,
@@ -278,9 +278,9 @@ async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
                 global.add_store(
                     "command",
                     Store::new(
-                        Cow::from(opt.name().as_str()),
-                        Cow::from(opt.hint().as_str()),
-                        Cow::from(opt.help().as_str()),
+                        Cow::from(opt.name()),
+                        Cow::from(opt.hint()),
+                        Cow::from(opt.help()),
                         Cow::default(),
                         !opt.force(),
                         true,
@@ -293,9 +293,9 @@ async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
                 global.add_store(
                     "option",
                     Store::new(
-                        Cow::from(opt.name().as_str()),
-                        Cow::from(opt.hint().as_str()),
-                        Cow::from(opt.help().as_str()),
+                        Cow::from(opt.name()),
+                        Cow::from(opt.hint()),
+                        Cow::from(opt.help()),
                         Cow::default(),
                         !opt.force(),
                         false,

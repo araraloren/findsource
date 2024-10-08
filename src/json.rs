@@ -1,9 +1,10 @@
 use std::ops::Deref;
 use std::ops::DerefMut;
 
+use cote::aopt::opt::OptConfig;
 use cote::aopt::prelude::AFwdParser;
-use cote::CoteError;
-use cote::*;
+use cote::prelude::*;
+use cote::Error;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -27,9 +28,9 @@ impl DerefMut for JsonOpt {
 }
 
 impl JsonOpt {
-    pub fn add_to(self, parser: &mut AFwdParser) -> Result<(), CoteError> {
+    pub fn add_to(self, parser: &mut AFwdParser) -> Result<(), Error> {
         for meta in self.opts.into_iter() {
-            let cfg = meta.into_config(parser.optset_mut())?;
+            let cfg: OptConfig = meta.build(parser.optset_mut())?;
             parser.add_opt_cfg(cfg)?;
         }
         Ok(())

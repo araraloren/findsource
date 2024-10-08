@@ -7,7 +7,7 @@ use tokio::fs::read_dir;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::Sender;
 
-use cote::*;
+use cote::prelude::*;
 
 use crate::note;
 use crate::start_worker;
