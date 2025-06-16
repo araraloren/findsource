@@ -43,6 +43,33 @@ then `FS_CONFIG_DIR` which can be set at runtime.
 
 Get [Release](https://github.com/araraloren/findsource/releases) here.
 
+## Configure the shell completion
+
+* Fish
+
+```
+echo 'fs --_shell fish | source' >> ~/.config/fish/config.fish
+```
+
+* Zsh
+
+```
+echo 'source <(fs --_shell zsh)' >> ~/.zshrc
+```
+
+* Bash
+
+```
+echo 'source <(fs --_shell bash)' >> ~/.bashrc
+```
+
+* PowerShell
+
+```
+Add-Content $PROFILE "`nfs --_shell powershell | Out-String | Invoke-Expression"
+```
+
+
 ## LICENSE
 
 MPL-2.0

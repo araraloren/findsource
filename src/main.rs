@@ -6,12 +6,16 @@ mod r#macro;
 use color_eyre::Result;
 use cote::aopt;
 use cote::aopt::prelude::AFwdParser;
-use cote::aopt::prelude::APreParser;
-use cote::aopt::shell::CompleteService;
-use cote::aopt::shell::Shell;
+use cote::aopt::prelude::AHCSet;
 use cote::aopt::HashMap;
 use cote::aopt_help;
 use cote::prelude::*;
+use cote::shell::shell::Complete;
+use cote::shell::value::once_values;
+use cote::shell::CompleteCli;
+use cote::shell::HCOptSetManager;
+use std::fs::read_dir;
+
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,16 +29,18 @@ use config::try_to_load_configuration2;
 use finder::Finder;
 use json::JsonOpt;
 
+pub const BIN: &str = "fs";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
-    if let Some((cl, shell)) = aopt::shell::try_get_complete()? {
-        let args = cl.split(' ').collect::<Vec<&str>>();
-        let args = Args::from(args.into_iter());
-        let cli = Cli::new(args, false).await?;
+    if let Ok(cc) = aopt::shell::get_complete_cli() {
+        if cc.write_stdout(BIN, BIN).is_err() {
+            let cli = Cli::new(Args::from(&cc.args), false).await?;
 
-        cli.try_auto_complete(shell).await?;
+            cli.try_auto_complete(cc).await?;
+        }
     } else {
         let cli = Cli::new(Args::from_env(), true).await?;
 
@@ -69,7 +75,7 @@ async fn main() -> Result<()> {
 }
 
 struct Cli<'a> {
-    loader: APreParser<'a>,
+    loader: AFwdParser<'a>,
 
     finder: AFwdParser<'a>,
 
@@ -81,8 +87,9 @@ struct Cli<'a> {
 impl<'a> Cli<'a> {
     pub async fn new(args: Args, allow_debug: bool) -> Result<Cli<'a>> {
         let config_dir = get_configuration_directories();
-        let mut loader = APreParser::default();
+        let mut loader = AFwdParser::default();
 
+        loader.set_prepolicy(true);
         loader.add_opt("-d;--debug=b: Print debug message")?;
         loader.add_opt("-?;--help=b: Print help message")?;
         loader.add_opt("-v;--verbose=b: Print more debug message")?;
@@ -90,7 +97,7 @@ impl<'a> Cli<'a> {
             .add_opt("-l;--load=s: Load option setting from configuration name or file")?
             .set_hint("-l,--load CFG|PATH")
             .set_values_t(Vec::<JsonOpt>::new())
-            .on(move |set: &mut ASet, _: &mut ASer, ctx: &Ctx| {
+            .on(move |set, ctx| {
                 let cfg = ctx.value::<String>()?;
                 let ret = try_to_load_configuration2(&config_dir, &cfg);
 
@@ -119,17 +126,14 @@ impl<'a> Cli<'a> {
             .add_opt("path=p@1..: Path need to be search")?
             .set_force(true)
             .set_hint("[PATH]+")
-            .on(move |_: &mut ASet, _: &mut ASer, ctx: &Ctx| {
+            .on(move |_, ctx| {
                 let path = ctx.value::<PathBuf>()?;
 
                 if debug {
                     eprintln!("INFO: ... prepare searching path: {:?}", path);
                 }
                 if !path.is_file() && !path.is_dir() {
-                    Err(aopt::raise_error!(
-                        "{:?} is not a valid path!",
-                        path.as_path()
-                    ))
+                    Err(aopt::error!("{:?} is not a valid path!", path.as_path()))
                 } else {
                     Ok(Some(path))
                 }
@@ -164,16 +168,48 @@ impl<'a> Cli<'a> {
         })
     }
 
-    pub async fn try_auto_complete(mut self, shell: Shell) -> Result<()> {
-        let mut service = CompleteService::default();
-
+    pub async fn try_auto_complete(mut self, cli: CompleteCli) -> Result<()> {
         if let Some(options) = self.loader.take_options() {
             for opt in options {
                 self.finder.optset_mut().insert(opt);
             }
         }
-        service.parse_with(self.args, self.finder.optset_mut())?;
-        service.write_complete_to(self.finder.optset(), &mut std::io::stdout(), shell)?;
+        let mut ctx = cli.get_context()?;
+        let manager = HCOptSetManager::new(self.finder.optset);
+        let mut shells = cote::shell::shell::Manager::default();
+        let shell = shells.find_mut(&cli.shell)?;
+
+        shell.set_buff(std::io::stdout());
+        ctx.set_values(
+            "-l",
+            once_values(move |_| {
+                let mut cfgs = vec![];
+
+                for dir in get_configuration_directories().into_iter().flatten() {
+                    if dir.exists() && dir.is_dir() {
+                        let entrys = read_dir(&dir).map_err(|e| {
+                            error!("can not read directory `{}`: {e:?}", dir.display())
+                        })?;
+
+                        for entry in entrys {
+                            let entry = entry.map_err(|e| error!("can not read entry: {e:?}"))?;
+                            let path = entry.path();
+
+                            if path.is_file()
+                                && Some("json") == path.extension().and_then(|v| v.to_str())
+                            {
+                                if let Some(filename) = path.with_extension("").file_name() {
+                                    cfgs.push(filename.to_os_string());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(cfgs)
+            }),
+        );
+        manager.complete(shell, &mut ctx)?;
         Ok(())
     }
 
@@ -235,7 +271,7 @@ impl<'a> Cli<'a> {
     }
 }
 
-async fn print_help(set: &ASet, finder_set: &ASet) -> color_eyre::Result<()> {
+async fn print_help<'a>(set: &AHCSet<'a>, finder_set: &AHCSet<'a>) -> color_eyre::Result<()> {
     use aopt_help::block::Block;
     use aopt_help::store::Store;
 
