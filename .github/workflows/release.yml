@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@master
       - name: Install rust toolchain
-        uses: action-rs/toolchain@v1
+        uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           override: true
