@@ -18,11 +18,6 @@ jobs:
             archive: zip
     steps:
       - uses: actions/checkout@master
-      - name: Install rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
       - name: Compile and release
         uses: rust-build/rust-build.action@master
         with:
@@ -30,9 +25,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUSTTARGET: ${{ matrix.target }}
-          EXTRA_FILES: "README.md LICENSE config/c.json config/cpp.json config/cfg.json config/make.json config/unity.json config/rs.json shell/fs.fish shell/fs.sh shell/fs.zsh"
+          EXTRA_FILES: "README.md LICENSE config/c.json config/cpp.json config/cfg.json config/make.json config/unity.json config/rs.json"
           ARCHIVE_TYPES: ${{ matrix.archive }}
           PRE_BUILD: "pre_build.sh"
           POST_BUILD: "test/post_build.sh"
           MINIFY: "yes"
           FS_BUILD_CONFIG_DIR: config
+          MACOSX_DEPLOYMENT_TARGET: "10.10"
