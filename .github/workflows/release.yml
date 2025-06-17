@@ -5,7 +5,7 @@ on:
 jobs:
   release:
     name: release ${{ matrix.target }} (with non-required env)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +25,8 @@ jobs:
           override: true
       - name: Compile and release
         uses: rust-build/rust-build.action@master
+        with:
+          TOOLCHAIN_VERSION: stable
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUSTTARGET: ${{ matrix.target }}
