@@ -31,4 +31,4 @@ jobs:
           POST_BUILD: "test/post_build.sh"
           MINIFY: "yes"
           FS_BUILD_CONFIG_DIR: config
-          MACOSX_DEPLOYMENT_TARGET: "10.10"
+          MACOSX_DEPLOYMENT_TARGET: "10.12"
