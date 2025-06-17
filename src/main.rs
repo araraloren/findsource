@@ -7,13 +7,13 @@ use color_eyre::Result;
 use cote::aopt;
 use cote::aopt::prelude::AFwdParser;
 use cote::aopt::prelude::AHCSet;
+use cote::aopt::shell::CompletionManager;
 use cote::aopt::HashMap;
 use cote::aopt_help;
 use cote::prelude::*;
 use cote::shell::shell::Complete;
 use cote::shell::value::once_values;
 use cote::shell::CompleteCli;
-use cote::shell::HCOptSetManager;
 use std::fs::read_dir;
 
 use std::borrow::Cow;
@@ -175,13 +175,13 @@ impl<'a> Cli<'a> {
             }
         }
         let mut ctx = cli.get_context()?;
-        let manager = HCOptSetManager::new(self.finder.optset);
+        let mut cm = CompletionManager::new(self.finder.optset);
         let mut shells = cote::shell::shell::Manager::default();
         let shell = shells.find_mut(&cli.shell)?;
 
         shell.set_buff(std::io::stdout());
-        ctx.set_values(
-            "-l",
+        cm.set_values(
+            cm.optset().find_uid("-l")?,
             once_values(move |_| {
                 let mut cfgs = vec![];
 
@@ -209,7 +209,7 @@ impl<'a> Cli<'a> {
                 Ok(cfgs)
             }),
         );
-        manager.complete(shell, &mut ctx)?;
+        cm.complete(shell, &mut ctx)?;
         Ok(())
     }
 

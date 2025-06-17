@@ -1,6 +1,6 @@
 [package]
 name = "findsource"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 authors = [
     "araraloren <blackcatoverwall@gmail.com>",
@@ -18,7 +18,7 @@ name = "fs"
 path = "src/main.rs"
 
 [dependencies]
-cote = { version = "0.15", features = [
+cote = { version = "0.16", features = [
     "sync",
     "serde",
     "shell",
