@@ -33,3 +33,6 @@ async-recursion = "1.0.4"
 
 [profile.release]
 lto = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.22"
