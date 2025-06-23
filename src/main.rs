@@ -175,31 +175,30 @@ impl<'a> Cli<'a> {
             }
         }
         let mut ctx = cli.get_context()?;
-        let mut cm = CompletionManager::new(self.finder.optset);
+        let mut manager = CompletionManager::new(self.finder.optset);
         let mut shells = cote::shell::shell::Manager::default();
         let shell = shells.find_mut(&cli.shell)?;
 
         shell.set_buff(std::io::stdout());
-        cm.set_values(
-            cm.optset().find_uid("-l")?,
+        manager.set_values(
+            manager.optset().find_uid("-l")?,
             once_values(move |_| {
                 let mut cfgs = vec![];
 
-                for dir in get_configuration_directories().into_iter().flatten() {
-                    if dir.exists() && dir.is_dir() {
-                        let entrys = read_dir(&dir).map_err(|e| {
-                            error!("can not read directory `{}`: {e:?}", dir.display())
-                        })?;
-
+                for dir in get_configuration_directories()
+                    .into_iter()
+                    .flatten()
+                    .filter(|v| v.exists() && v.is_dir())
+                {
+                    if let Ok(entrys) = read_dir(&dir) {
                         for entry in entrys {
-                            let entry = entry.map_err(|e| error!("can not read entry: {e:?}"))?;
-                            let path = entry.path();
-
-                            if path.is_file()
-                                && Some("json") == path.extension().and_then(|v| v.to_str())
-                            {
-                                if let Some(filename) = path.with_extension("").file_name() {
-                                    cfgs.push(filename.to_os_string());
+                            if let Ok(path) = entry.map(|v| v.path()) {
+                                if path.is_file()
+                                    && Some("json") == path.extension().and_then(|v| v.to_str())
+                                {
+                                    if let Some(filename) = path.with_extension("").file_name() {
+                                        cfgs.push(filename.to_os_string());
+                                    }
                                 }
                             }
                         }
@@ -209,7 +208,7 @@ impl<'a> Cli<'a> {
                 Ok(cfgs)
             }),
         );
-        cm.complete(shell, &mut ctx)?;
+        manager.complete(shell, &mut ctx)?;
         Ok(())
     }
 

@@ -18,7 +18,7 @@ name = "fs"
 path = "src/main.rs"
 
 [dependencies]
-cote = { version = "0.16", features = [
+cote = { version = "0.17", features = [
     "sync",
     "serde",
     "shell",
