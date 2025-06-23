@@ -10,21 +10,27 @@ jobs:
         platform:
           - runs-on: ubuntu-latest
             target: x86_64-unknown-freebsd
+            executable: fs
 
-          # - runs-on: ubuntu-latest
-          #   target: x86_64-unknown-linux-musl
+          - runs-on: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            executable: fs
 
-          # - runs-on: ubuntu-latest
-          #   target: aarch64-unknown-linux-musl
+          - runs-on: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            executable: fs
 
           - runs-on: ubuntu-latest
             target: x86_64-pc-windows-gnu
+            executable: fs.exe
 
-          # - runs-on: windows-latest
-          #   target: x86_64-pc-windows-msvc
+          - runs-on: windows-latest
+            target: x86_64-pc-windows-msvc
+            executable: fs
 
           - runs-on: macOS-latest
             target: x86_64-apple-darwin
+            executable: fs
 
           # more targets here ...
 
@@ -42,7 +48,7 @@ jobs:
       - name: Publish artifacts and release
         uses: houseabsolute/actions-rust-release@v0
         with:
-          executable-name: fs
+          executable-name: ${{ matrix.platform.executable }}
           target: ${{ matrix.platform.target }}
           extra-files: "README.md\nLICENSE\nconfig/c.json\nconfig/cpp.json\nconfig/cfg.json\nconfig/make.json\nconfig/unity.json\nconfig/rs.json"
           changes-file: ""
