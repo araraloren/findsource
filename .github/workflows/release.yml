@@ -44,6 +44,14 @@ jobs:
         with:
           executable-name: fs
           target: ${{ matrix.platform.target }}
-          extra-files: "README.md LICENSE config/c.json config/cpp.json config/cfg.json config/make.json config/unity.json config/rs.json"
+          extra-files: 
+            - README.md
+            - LICENSE
+            - config/c.json
+            - config/cpp.json
+            - config/cfg.json
+            - config/make.json
+            - config/unity.json 
+            - config/rs.json
           changes-file: ""
           
