@@ -23,8 +23,8 @@ jobs:
           # - runs-on: windows-latest
           #   target: x86_64-pc-windows-msvc
 
-          # - runs-on: macOS-latest
-          #   target: x86_64-apple-darwin
+          - runs-on: macOS-latest
+            target: x86_64-apple-darwin
 
           # more targets here ...
 
