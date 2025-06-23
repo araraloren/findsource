@@ -17,8 +17,8 @@ jobs:
           # - runs-on: ubuntu-latest
           #   target: aarch64-unknown-linux-musl
 
-          # - runs-on: ubuntu-latest
-          #   target: x86_64-pc-windows-gnu
+          - runs-on: ubuntu-latest
+            target: x86_64-pc-windows-gnu
 
           # - runs-on: windows-latest
           #   target: x86_64-pc-windows-msvc
@@ -46,3 +46,4 @@ jobs:
           target: ${{ matrix.platform.target }}
         env:
           extra-files: "README.md LICENSE config/c.json config/cpp.json config/cfg.json config/make.json config/unity.json config/rs.json"
+          changes-file: ""
