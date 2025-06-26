@@ -13,6 +13,7 @@ use cote::aopt_help;
 use cote::prelude::*;
 use cote::shell::shell::Complete;
 use cote::shell::value::once_values;
+use cote::shell::value::Values;
 use cote::shell::CompleteCli;
 use std::fs::read_dir;
 
@@ -168,47 +169,50 @@ impl<'a> Cli<'a> {
         })
     }
 
+    pub fn list_configurations<O>() -> impl Values<O, Err = cote::Error> {
+        once_values(move |_| {
+            let mut cfgs = vec![];
+
+            for dir in get_configuration_directories()
+                .into_iter()
+                .flatten()
+                .filter(|v| v.exists() && v.is_dir())
+            {
+                if let Ok(entrys) = read_dir(&dir) {
+                    for entry in entrys {
+                        if let Ok(path) = entry.map(|v| v.path()) {
+                            if path.is_file()
+                                && Some("json") == path.extension().and_then(|v| v.to_str())
+                            {
+                                if let Some(filename) = path.with_extension("").file_name() {
+                                    cfgs.push(filename.to_os_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(cfgs)
+        })
+    }
+
     pub async fn try_auto_complete(mut self, cli: CompleteCli) -> Result<()> {
         if let Some(options) = self.loader.take_options() {
             for opt in options {
                 self.finder.optset_mut().insert(opt);
             }
         }
-        let mut ctx = cli.get_context()?;
-        let mut manager = CompletionManager::new(self.finder.optset);
-        let mut shells = cote::shell::shell::Manager::default();
-        let shell = shells.find_mut(&cli.shell)?;
+        cli.complete(|shell| {
+            let mut ctx = cli.get_context()?;
+            let mut manager = CompletionManager::new(self.finder.optset);
+            let cfg_uid = manager.optset().find_uid("-l")?;
 
-        shell.set_buff(std::io::stdout());
-        manager.set_values(
-            manager.optset().find_uid("-l")?,
-            once_values(move |_| {
-                let mut cfgs = vec![];
-
-                for dir in get_configuration_directories()
-                    .into_iter()
-                    .flatten()
-                    .filter(|v| v.exists() && v.is_dir())
-                {
-                    if let Ok(entrys) = read_dir(&dir) {
-                        for entry in entrys {
-                            if let Ok(path) = entry.map(|v| v.path()) {
-                                if path.is_file()
-                                    && Some("json") == path.extension().and_then(|v| v.to_str())
-                                {
-                                    if let Some(filename) = path.with_extension("").file_name() {
-                                        cfgs.push(filename.to_os_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Ok(cfgs)
-            }),
-        );
-        manager.complete(shell, &mut ctx)?;
+            shell.set_buff(std::io::stdout());
+            manager.set_values(cfg_uid, Self::list_configurations());
+            manager.complete(shell, &mut ctx)?;
+            Ok(())
+        })?;
         Ok(())
     }
 

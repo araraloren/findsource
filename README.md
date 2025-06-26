@@ -69,6 +69,11 @@ echo 'source <(fs --_shell bash)' >> ~/.bashrc
 Add-Content $PROFILE "`nfs --_shell powershell | Out-String | Invoke-Expression"
 ```
 
+* PowerShell7
+
+```
+Add-Content $PROFILE "`nfs --_shell powershell7 | Out-String | Invoke-Expression"
+```
 
 ## LICENSE
 
