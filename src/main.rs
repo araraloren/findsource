@@ -3,23 +3,22 @@ mod finder;
 mod json;
 mod r#macro;
 
+use std::borrow::Cow;
+use std::fs::read_dir;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use color_eyre::Result;
 use cote::aopt;
-use cote::aopt::prelude::AFwdParser;
-use cote::aopt::prelude::AHCSet;
+use cote::aopt::prelude::*;
 use cote::aopt::shell::CompletionManager;
 use cote::aopt::HashMap;
 use cote::aopt_help;
-use cote::prelude::*;
 use cote::shell::shell::Complete;
 use cote::shell::value::once_values;
 use cote::shell::value::Values;
 use cote::shell::CompleteCli;
-use std::fs::read_dir;
 
-use std::borrow::Cow;
-use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::Receiver;
