@@ -18,7 +18,7 @@ name = "fs"
 path = "src/main.rs"
 
 [dependencies]
-cote = { version = "0.17", features = [
+aopt = { version = "1.4", features = [
     "sync",
     "serde",
     "shell",
@@ -30,6 +30,7 @@ tokio = { version = "1.45", features = ["full"] }
 atty = "0.2.14"
 dunce = "1.0"
 async-recursion = "1.0.4"
+aopt-help = "0.3.6"
 
 [profile.release]
 lto = true

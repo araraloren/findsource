@@ -1,13 +1,12 @@
-use cote::aopt::prelude::AFwdParser;
-use cote::aopt::HashMap;
+use aopt::prelude::AFwdParser;
+use aopt::prelude::*;
+use aopt::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::read_dir;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::Sender;
-
-use cote::prelude::*;
 
 use crate::note;
 use crate::start_worker;

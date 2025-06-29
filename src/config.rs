@@ -1,6 +1,6 @@
-use crate::json::JsonOpt;
+use crate::json::JsonOptCollection;
 
-use cote::Error;
+use aopt::Error;
 use std::path::PathBuf;
 
 const CONFIG: &str = include_str!("../config.json");
@@ -8,7 +8,7 @@ const CONFIG: &str = include_str!("../config.json");
 pub fn try_to_load_configuration2(
     config_directories: &[Option<std::path::PathBuf>],
     name: &str,
-) -> Result<(PathBuf, JsonOpt), Error> {
+) -> Result<(PathBuf, JsonOptCollection), Error> {
     let cfg_name = format!("{}.json", name);
     let mut config = PathBuf::from(name);
 

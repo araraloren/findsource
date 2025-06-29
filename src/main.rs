@@ -1,34 +1,32 @@
 mod config;
 mod finder;
-mod json;
 mod r#macro;
+
+pub mod json;
 
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use aopt::prelude::*;
+use aopt::shell::shell::Complete;
+use aopt::shell::value::once_values;
+use aopt::shell::value::Values;
+use aopt::shell::CompleteCli;
+use aopt::shell::CompletionManager;
+use aopt::Error;
+use aopt::HashMap;
 use color_eyre::Result;
-use cote::aopt;
-use cote::aopt::prelude::*;
-use cote::aopt::shell::CompletionManager;
-use cote::aopt::HashMap;
-use cote::aopt_help;
-use cote::shell::shell::Complete;
-use cote::shell::value::once_values;
-use cote::shell::value::Values;
-use cote::shell::CompleteCli;
-
+use config::default_json_configuration;
+use config::get_configuration_directories;
+use config::try_to_load_configuration2;
+use finder::Finder;
+use json::JsonOptCollection;
 use tokio::fs::read_dir;
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::Receiver;
-
-use config::default_json_configuration;
-use config::get_configuration_directories;
-use config::try_to_load_configuration2;
-use finder::Finder;
-use json::JsonOpt;
 
 pub const BIN: &str = "fs";
 
@@ -97,7 +95,7 @@ impl<'a> Cli<'a> {
         loader
             .add_opt("-l;--load=s: Load option setting from configuration name or file")?
             .set_hint("-l,--load CFG|PATH")
-            .set_values_t(Vec::<JsonOpt>::new())
+            .set_values_t(Vec::<JsonOptCollection>::new())
             .on(move |set, ctx| {
                 let cfg = ctx.value::<String>()?;
                 let ret = try_to_load_configuration2(&config_dir, &cfg);
@@ -118,7 +116,9 @@ impl<'a> Cli<'a> {
         let mut ret = loader.parse(args)?;
         let mut debug = *loader.find_val("--debug")?;
         let mut finder = AFwdParser::default();
-        let load_jsons = loader.take_vals::<JsonOpt>("--load").unwrap_or_default();
+        let load_jsons = loader
+            .take_vals::<JsonOptCollection>("--load")
+            .unwrap_or_default();
 
         if !allow_debug {
             debug = false;
@@ -139,16 +139,17 @@ impl<'a> Cli<'a> {
                     Ok(Some(path))
                 }
             })?;
-        let mut jsonopts: JsonOpt = serde_json::from_str(default_json_configuration()).unwrap();
-        let mut pre_loads = HashMap::<String, String>::default();
+        let mut jsonopts: JsonOptCollection =
+            serde_json::from_str(default_json_configuration()).unwrap();
+        let mut pre_load = HashMap::<String, String>::default();
 
         // merge the json configurations
         load_jsons.into_iter().for_each(|json| {
             for cfg in json.opts {
-                if !pre_loads.contains_key(cfg.id()) {
-                    pre_loads.insert(cfg.id().clone(), cfg.option().clone());
+                if !pre_load.contains_key(&cfg.id) {
+                    pre_load.insert(cfg.id.clone(), cfg.option.clone());
                 }
-                jsonopts.add_cfg(cfg);
+                jsonopts.add_json_config(cfg);
             }
         });
         if debug {
@@ -156,20 +157,20 @@ impl<'a> Cli<'a> {
                 "INFO: ... loading cfg: {}",
                 serde_json::to_string_pretty(&jsonopts)?
             );
-            note!("INFO: ... loading options: {:?}", pre_loads);
+            note!("INFO: ... loading options: {:?}", pre_load);
         }
         // add the option to finder
-        jsonopts.add_to(&mut finder)?;
+        jsonopts.append_opts(&mut finder)?;
 
         Ok(Self {
             loader,
             finder,
             args: Args::from(ret.take_args()),
-            pre_load: pre_loads,
+            pre_load,
         })
     }
 
-    pub fn list_configurations<O>(handle: Handle) -> impl Values<O, Err = cote::Error> {
+    pub fn list_configurations<O>(handle: Handle) -> impl Values<O, Err = Error> {
         once_values(move |_| {
             handle.block_on(async move {
                 let mut cfgs = vec![];
