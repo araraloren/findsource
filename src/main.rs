@@ -4,7 +4,6 @@ mod json;
 mod r#macro;
 
 use std::borrow::Cow;
-use std::fs::read_dir;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -19,7 +18,9 @@ use cote::shell::value::once_values;
 use cote::shell::value::Values;
 use cote::shell::CompleteCli;
 
+use tokio::fs::read_dir;
 use tokio::io::AsyncWriteExt;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::Receiver;
 
@@ -168,31 +169,33 @@ impl<'a> Cli<'a> {
         })
     }
 
-    pub fn list_configurations<O>() -> impl Values<O, Err = cote::Error> {
+    pub fn list_configurations<O>(handle: Handle) -> impl Values<O, Err = cote::Error> {
         once_values(move |_| {
-            let mut cfgs = vec![];
+            handle.block_on(async move {
+                let mut cfgs = vec![];
 
-            for dir in get_configuration_directories()
-                .into_iter()
-                .flatten()
-                .filter(|v| v.exists() && v.is_dir())
-            {
-                if let Ok(entrys) = read_dir(&dir) {
-                    for entry in entrys {
-                        if let Ok(path) = entry.map(|v| v.path()) {
-                            if path.is_file()
-                                && Some("json") == path.extension().and_then(|v| v.to_str())
-                            {
-                                if let Some(filename) = path.with_extension("").file_name() {
-                                    cfgs.push(filename.to_os_string());
+                for dir in get_configuration_directories()
+                    .into_iter()
+                    .flatten()
+                    .filter(|v| v.exists() && v.is_dir())
+                {
+                    if let Ok(mut entrys) = read_dir(&dir).await {
+                        while let Ok(entry) = entrys.next_entry().await {
+                            if let Some(path) = entry.map(|v| v.path()) {
+                                if path.is_file()
+                                    && Some("json") == path.extension().and_then(|v| v.to_str())
+                                {
+                                    if let Some(filename) = path.with_extension("").file_name() {
+                                        cfgs.push(filename.to_os_string());
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            Ok(cfgs)
+                Ok(cfgs)
+            })
         })
     }
 
@@ -208,7 +211,7 @@ impl<'a> Cli<'a> {
             let cfg_uid = manager.optset().find_uid("-l")?;
 
             shell.set_buff(std::io::stdout());
-            manager.set_values(cfg_uid, Self::list_configurations());
+            manager.set_values(cfg_uid, Self::list_configurations(Handle::current()));
             manager.complete(shell, &mut ctx)?;
             Ok(())
         })?;

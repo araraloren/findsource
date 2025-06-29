@@ -78,6 +78,7 @@ Section "Uninstall"
   ; Remove files and uninstaller
   Delete $INSTDIR\fs.exe
   Delete $INSTDIR\c.json
+  Delete $INSTDIR\rs.json
   Delete $INSTDIR\cpp.json
   Delete $INSTDIR\cfg.json
   Delete $INSTDIR\make.json
