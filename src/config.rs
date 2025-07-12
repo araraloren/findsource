@@ -1,5 +1,6 @@
 use crate::json::JsonOptCollection;
 
+use aopt::error;
 use aopt::Error;
 use std::path::PathBuf;
 
@@ -9,7 +10,7 @@ pub fn try_to_load_configuration2(
     config_directories: &[Option<std::path::PathBuf>],
     name: &str,
 ) -> Result<(PathBuf, JsonOptCollection), Error> {
-    let cfg_name = format!("{}.json", name);
+    let cfg_name = format!("{name}.json");
     let mut config = PathBuf::from(name);
 
     // search in config directories
@@ -24,13 +25,12 @@ pub fn try_to_load_configuration2(
     // if argument is a valid path
     if config.is_file() {
         let context = std::fs::read_to_string(&config)
-            .map_err(|e| Error::raise_error(format!("Can not read from {:?}: {:?}", &config, e)))?;
+            .map_err(|e| error!("Can not read from {:?}: {:?}", &config, e))?;
 
         Ok((
             config,
-            serde_json::from_str(&context).map_err(|e| {
-                Error::raise_error(format!("Invalid configuration format: {:?}", e))
-            })?,
+            serde_json::from_str(&context)
+                .map_err(|e| error!("Invalid configuration format: {e:?}"))?,
         ))
     } else {
         let mut error_message = String::from("Can not find configuration file in ");

@@ -131,7 +131,7 @@ impl<'a> Cli<'a> {
                 let path = ctx.value::<PathBuf>()?;
 
                 if debug {
-                    eprintln!("INFO: ... prepare searching path: {:?}", path);
+                    eprintln!("INFO: ... prepare searching path: {path:?}");
                 }
                 if !path.is_file() && !path.is_dir() {
                     Err(aopt::error!("{:?} is not a valid path!", path.as_path()))
