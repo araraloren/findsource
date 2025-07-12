@@ -258,6 +258,7 @@ impl<'a> Cli<'a> {
             while let Ok(count) = std::io::stdin().read_line(&mut buff) {
                 if count > 0 {
                     paths.push(PathBuf::from(buff.trim()));
+                    buff.clear();
                 } else {
                     break;
                 }
